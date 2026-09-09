@@ -1,0 +1,18 @@
+# Never commit a credential. The spike reads one from a path OUTSIDE the repo;
+# this is belt and braces in case someone points it at the working tree.
+mail-spike-creds.json
+*-creds.json
+
+# Never commit anyone's mail. A corpus extracted from a real mailbox is that
+# person's private correspondence; it belongs outside the working tree and is
+# deleted when the spike that needed it is done.
+corpus*/
+*-corpus/
+_empty/
+
+# The built binary at the repo ROOT only. Unanchored, "imap-spike" also
+# matched the SOURCE directory mail/cmd/imap-spike/ and silently excluded the
+# whole program from the first commit.
+/imap-spike
+/imap-spike.exe
+mail/imap-spike.exe
