@@ -46,8 +46,13 @@ type Address struct {
 
 // Header is what a listing returns: enough to triage, without a body.
 type Header struct {
-	ID        string    `json:"id"`
-	ThreadID  string    `json:"thread_id,omitempty"`
+	ID       string `json:"id"`
+	ThreadID string `json:"thread_id,omitempty"`
+	// MessageID is this message's OWN RFC 5322 id, distinct from ThreadID
+	// which is the root of its conversation. Both are needed to build a reply
+	// that threads: In-Reply-To names the parent, References names the chain.
+	// Collapsing them produced a References header listing the same id twice.
+	MessageID string    `json:"message_id,omitempty"`
 	Date      time.Time `json:"date"`
 	From      Address   `json:"from"`
 	To        []Address `json:"to,omitempty"`
