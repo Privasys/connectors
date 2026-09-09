@@ -97,13 +97,16 @@ func TestRepliable(t *testing.T) {
 		"no-reply@accounts.google.com", "noreply@x.example", "do-not-reply@bank.example",
 		"donotreply@x.example", "mailer-daemon@x.example", "notifications@github.example",
 		"ne-pas-repondre@fr.example", "postmaster@x.example",
+		// Found by running the real inbox through the listing: an anchored
+		// pattern called this one repliable.
+		"CloudPlatform-noreply@google.com", "github.no-reply@example.com",
 	}
 	for _, a := range unrepliable {
 		if Repliable(a) {
 			t.Errorf("%s should not be repliable", a)
 		}
 	}
-	for _, a := range []string{"alice@example.com", "b.foing@example.fr", "replies@example.com", "andrew@x.example"} {
+	for _, a := range []string{"alice@example.com", "b.foing@example.fr", "replies@example.com", "andrew@x.example", "reply.all@example.com"} {
 		if !Repliable(a) {
 			t.Errorf("%s should be repliable", a)
 		}

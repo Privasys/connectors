@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -25,6 +26,13 @@ import (
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
+	flag.Parse()
+	if *linkSub != "" {
+		if err := linkFromFile(*linkSub, *linkCreds); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	port := os.Getenv("PORT")
 	if port == "" {

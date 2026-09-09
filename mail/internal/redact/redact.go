@@ -86,12 +86,27 @@ var rules = []rule{
 		re:          regexp.MustCompile(`(?i)https?://[^\s<>"']*\b(?:reset[-_]?password|password[-_]?reset|forgot[-_]?password|set[-_]?password|magic[-_]?link|verify[-_]?email|email[-_]?verif\w*|confirm[-_]?email|activate[-_]?account|one[-_]?time[-_]?login|passwordless|signin[-_]?link|login[-_]?link|auth[/_-]callback|reinitialiser[-_]?mot[-_]?de[-_]?passe)\b[^\s<>"']*`),
 		replacement: "[login link removed]",
 	},
+	// A one-click ACCOUNT ACTION link.
+	//
+	// Found by running a real inbox through the connector, not by thinking
+	// about it: a Google security alert carries
+	// accounts.google.com/AccountDisavow?adt=<token>, which takes an
+	// irreversible action on the account in one click and which none of the
+	// rules above matched. The dangerous links are not only the ones that log
+	// you in; they are the ones that DO something.
+	{
+		name: "account-action-link",
+		// No leading \b: the verb is often glued to another word in a path,
+		// as in /AccountDisavow, so a word boundary before it never matches.
+		re:          regexp.MustCompile(`(?i)https?://[^\s<>"']*(?:disavow|remove[-_]?account|close[-_]?account|delete[-_]?account|deactivate|revoke[-_]?(?:access|session|token|device)|report[-_]?(?:fraud|abuse)|confirm[-_]?(?:transfer|payment|transaction)|approve[-_]?(?:device|login|request))[^\s<>"']*`),
+		replacement: "[account action link removed]",
+	},
 	// A URL carrying something that looks like a bearer token, whatever the
 	// path says. Bounded to long high-entropy-ish values so ordinary query
 	// strings are left alone.
 	{
 		name:        "token-link",
-		re:          regexp.MustCompile(`(?i)https?://[^\s<>"']*[?&](?:token|access_token|id_token|auth|key|secret|otp|code|nonce|signature|sig)=[A-Za-z0-9._~+/=-]{20,}[^\s<>"']*`),
+		re:          regexp.MustCompile(`(?i)https?://[^\s<>"']*[?&](?:token|access_token|id_token|auth|key|secret|otp|code|nonce|signature|sig|adt|confirmation)=[A-Za-z0-9._~+/=-]{20,}[^\s<>"']*`),
 		replacement: "[link with a token removed]",
 	},
 	// Bearer tokens and API keys pasted into a body.

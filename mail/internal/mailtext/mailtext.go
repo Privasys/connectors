@@ -145,7 +145,11 @@ func Snippet(text string, max int) string {
 	return strings.TrimSpace(f[:cut]) + "…"
 }
 
-var noReply = regexp.MustCompile(`(?i)^(?:no[-_.]?reply|do[-_.]?not[-_.]?reply|noreply|donotreply|bounce|mailer[-_.]?daemon|postmaster|notifications?|alerts?|automated?|auto[-_.]?confirm|nepasrepondre|ne[-_.]?pas[-_.]?repondre)\b`)
+// The marker may sit anywhere in the local part, not just at the start: a
+// real listing turned up CloudPlatform-noreply.com, which an anchored
+// pattern reported as repliable. Bounded by a separator so an ordinary name
+// containing one of these strings is not caught.
+var noReply = regexp.MustCompile(`(?i)(?:^|[._+-])(?:no[-_.]?reply|do[-_.]?not[-_.]?reply|noreply|donotreply|bounce|mailer[-_.]?daemon|postmaster|notifications?|alerts?|automated?|auto[-_.]?confirm|nepasrepondre|ne[-_.]?pas[-_.]?repondre)\b`)
 
 // Repliable reports whether a human reads that address.
 //

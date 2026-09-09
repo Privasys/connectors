@@ -25,6 +25,10 @@ func TestRemovesCredentials(t *testing.T) {
 		{"token query", "Open https://x.example/go?access_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abc", "access_token=eyJ"},
 		{"bearer", "curl -H 'Bearer " + fakeKey("sk", "live") + "'", fakeKey("sk", "live")},
 		{"api key", "key is " + fakeKey("ghp", "") + " here", fakeKey("ghp", "")},
+		// The real one, lifted from a Google security alert while smoke-testing
+		// the connector against a live inbox. One click, irreversible.
+		{"account action link", "remove <https://accounts.google.com/AccountDisavow?adt=AOX8kjxQwErTyU12345> now", "AccountDisavow"},
+		{"revoke device link", "https://x.example/security/revoke-device?id=99", "revoke-device"},
 		{"private key", "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----", "MIIEow"},
 	}
 	for _, c := range cases {
@@ -51,6 +55,8 @@ func TestKeepsOrdinaryText(t *testing.T) {
 		"The meeting is in room 4820, second floor.",
 		"Our reference is ORDER-88213 if you need it.",
 		"https://docs.example.com/guide/authentication explains the flow.",
+		"See https://example.com/account/settings to change it.",
+		"Unsubscribe at https://news.example.com/unsubscribe?u=12 if you prefer.",
 		"I reset my password yesterday and it worked fine.",
 	}
 	for _, in := range cases {
