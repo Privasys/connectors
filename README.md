@@ -56,11 +56,27 @@ around it is always ours, because the shell is what holds the credential.
 
 ## Status
 
-The Mail Connector runs and serves its eleven tools, exercised end to end
-against a real 42,000-message mailbox: list, read, search, sent, labels,
-drafts, and the change feed. Capability grants are minted and enforced, and
+**The Mail Connector is deployed and running.** It serves its eleven tools,
+exercised end to end against a real 42,000-message mailbox: list, read,
+thread, search, sent, labels, mark read, drafts, and the change feed.
+Credentials are proved at link time, sealed to the enclave's measurement and
+kept in the holder's own Drive. Capability grants are minted and enforced, and
 enforcement fails closed.
 
-Not built yet: the Drive-backed credential store, the account-linking page,
-and the drivers for Microsoft Graph and the Gmail API. Deployment to a fleet
-comes after those.
+It also publishes what it was configured to trust into its own certificate, so
+"this connector was told to talk to that storage service, accepting any build
+of it" is something you can verify by attesting it rather than something you
+have to take our word for.
+
+Not built yet:
+
+- **The wallet leg.** The capability endpoint is implemented and tested but a
+  wallet has never called it, so approving a mailbox is not yet a thing a
+  person can do on their phone.
+- **Microsoft Graph and Gmail API drivers**, in that order, because that is
+  the order of how much permission each needs from its vendor. Generic IMAP
+  covers Gmail today through an app password, and every non-Google provider
+  permanently.
+- **Sending.** Deliberately, and not as an oversight to be closed quietly:
+  there is no send method on the driver interface at all, so adding one is a
+  change to the shape of the code rather than a flipped default.
