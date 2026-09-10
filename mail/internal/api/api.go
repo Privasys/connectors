@@ -157,6 +157,7 @@ func (s *Server) Routes() *http.ServeMux {
 	s.capabilityRoutes(m)
 	s.linkRoutes(m)
 	s.configureRoutes(m)
+	s.extensionsRoute(m)
 
 	return m
 }
