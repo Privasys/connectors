@@ -1,0 +1,70 @@
+name: Publish
+
+# Publishes the measured Mail Connector image to GHCR, the way the other
+# platform apps do: GITHUB_TOKEN plus packages:write, no personal token.
+#
+# The image is self-contained. The Dockerfile clones the RA-TLS client at an
+# exact pin from a public source, and the tool catalogue is passed in as a
+# build argument read from privasys.json, so the image that reaches the
+# registry is the one the control plane will learn the catalogue from.
+#
+# Deploying to an enclave is a separate step: versions create, stage, promote
+# and deploy through the management service. Promoting takes a human approval
+# on a device, which is the point of it.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mail/**'
+      - '.github/workflows/publish.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  mail:
+    name: Build and push the Mail Connector
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The catalogue reaches the control plane as an image label, and it must
+      # come from the one copy in privasys.json. Compacted here so the label is
+      # a single line, and validated so a broken manifest fails the build
+      # rather than shipping an image whose tools nobody can call.
+      - id: manifest
+        working-directory: mail
+        run: |
+          MANIFEST=$(jq -c . privasys.json)
+          echo "value=$MANIFEST" >> "$GITHUB_OUTPUT"
+
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          # The repo root, not mail/: the image needs the sibling RA-TLS
+          # checkout, which a context rooted in mail/ could never contain.
+          context: .
+          file: mail/Dockerfile
+          push: true
+          build-args: |
+            MANIFEST=${{ steps.manifest.outputs.value }}
+          tags: |
+            ghcr.io/privasys/mail-connector:latest
+            ghcr.io/privasys/mail-connector:${{ github.sha }}
+
+      # The digest is the app's identity on the platform: a version is created
+      # against image@digest, never a tag, because a tag can move under a
+      # deployment and a digest cannot.
+      - name: Report the digest
+        run: |
+          echo "Deploy this exact image:"
+          echo "  ghcr.io/privasys/mail-connector@${{ steps.build.outputs.digest }}"
