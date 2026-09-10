@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Privasys/connectors/mail/internal/grant"
 	"github.com/Privasys/connectors/mail/internal/imapdrv"
 	"github.com/Privasys/connectors/mail/internal/mail"
 	"github.com/Privasys/connectors/mail/internal/store"
@@ -41,7 +42,14 @@ const SubjectHeader = "X-Privasys-On-Behalf-Of"
 const idleTTL = 20 * time.Minute
 
 type Server struct {
-	store store.Store
+	store  store.Store
+	grants grant.Store
+
+	// requireGrant is the fail-closed switch. On the platform every tool call
+	// must be covered by a capability the holder approved. It can be turned
+	// off only for development, deliberately and explicitly, because a
+	// connector that serves mail without checking is the whole risk.
+	requireGrant bool
 
 	mu    sync.Mutex
 	conns map[string]*conn
@@ -52,8 +60,8 @@ type conn struct {
 	used time.Time
 }
 
-func New(s store.Store) *Server {
-	srv := &Server{store: s, conns: map[string]*conn{}}
+func New(s store.Store, g grant.Store, requireGrant bool) *Server {
+	srv := &Server{store: s, grants: g, requireGrant: requireGrant, conns: map[string]*conn{}}
 	go srv.reapIdle()
 	return srv
 }
@@ -123,17 +131,22 @@ func (s *Server) Routes() *http.ServeMux {
 		writeJSON(w, http.StatusOK, map[string]any{"ready": true})
 	})
 
-	s.tool(m, "/tools/list_messages", s.listMessages)
-	s.tool(m, "/tools/get_message", s.getMessage)
-	s.tool(m, "/tools/get_thread", s.getThread)
-	s.tool(m, "/tools/search", s.search)
-	s.tool(m, "/tools/list_sent", s.listSent)
-	s.tool(m, "/tools/set_labels", s.setLabels)
-	s.tool(m, "/tools/mark_read", s.markRead)
-	s.tool(m, "/tools/create_draft", s.createDraft)
-	s.tool(m, "/tools/delete_draft", s.deleteDraft)
-	s.tool(m, "/tools/changes", s.changes)
-	s.tool(m, "/tools/account", s.account)
+	// The permission each tool needs. Reading and writing are different
+	// sentences on the holder's approval screen, so they are different checks
+	// here: a holder who approved read-only must not find the agent labelling.
+	s.tool(m, "/tools/list_messages", grant.Read, s.listMessages)
+	s.tool(m, "/tools/get_message", grant.Read, s.getMessage)
+	s.tool(m, "/tools/get_thread", grant.Read, s.getThread)
+	s.tool(m, "/tools/search", grant.Read, s.search)
+	s.tool(m, "/tools/list_sent", grant.Read, s.listSent)
+	s.tool(m, "/tools/account", grant.Read, s.account)
+	s.tool(m, "/tools/set_labels", grant.Write, s.setLabels)
+	s.tool(m, "/tools/mark_read", grant.Write, s.markRead)
+	s.tool(m, "/tools/create_draft", grant.Write, s.createDraft)
+	s.tool(m, "/tools/delete_draft", grant.Write, s.deleteDraft)
+	s.tool(m, "/tools/changes", grant.Read, s.changes)
+
+	s.capabilityRoutes(m)
 
 	return m
 }
@@ -142,7 +155,7 @@ func (s *Server) Routes() *http.ServeMux {
 // returns something JSON-encodable.
 type handler func(ctx context.Context, sub string, drv mail.Driver, body json.RawMessage) (any, error)
 
-func (s *Server) tool(m *http.ServeMux, path string, h handler) {
+func (s *Server) tool(m *http.ServeMux, path string, need grant.Permission, h handler) {
 	m.HandleFunc("POST "+path, func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimSpace(r.Header.Get(SubjectHeader))
 		if sub == "" {
@@ -150,6 +163,10 @@ func (s *Server) tool(m *http.ServeMux, path string, h handler) {
 			// and guessing one would be guessing whose mail to open.
 			writeErr(w, http.StatusUnauthorized,
 				"this call carries no acting user; the platform must assert one")
+			return
+		}
+		if err := s.authorise(r, sub, need); err != nil {
+			writeErr(w, http.StatusForbidden, err.Error())
 			return
 		}
 		var body json.RawMessage

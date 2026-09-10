@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Privasys/connectors/mail/internal/api"
+	"github.com/Privasys/connectors/mail/internal/grant"
 	"github.com/Privasys/connectors/mail/internal/store"
 )
 
@@ -47,7 +48,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    ":" + port,
-		Handler: api.New(st).Handler(),
+		Handler: api.New(st, grant.NewMemory(), requireGrant()).Handler(),
 		// A tool call may long-poll the mailbox for up to a minute, so the
 		// write timeout has to clear that with room, or Changes would be cut
 		// off by our own server rather than by the caller's deadline.
@@ -123,4 +124,19 @@ func localKey() ([]byte, error) {
 	}
 	log.Print("no MAIL_STORE_KEY: generated an ephemeral one, so linked mailboxes will not survive a restart")
 	return key, nil
+}
+
+// requireGrant decides whether every tool call must be covered by a capability
+// the holder approved on their device.
+//
+// Fail closed. Turning it off is a development affordance for exercising the
+// mailbox before the wallet flow exists, and it is the single switch that
+// separates "a service the holder authorised" from "a service that will read
+// anyone's mail for anyone who asks", so it is loud and never the default.
+func requireGrant() bool {
+	if os.Getenv("MAIL_ALLOW_UNGRANTED") == "yes-i-am-developing" {
+		log.Print("DEVELOPMENT: capability checks are OFF; every caller may reach every linked mailbox")
+		return false
+	}
+	return true
 }

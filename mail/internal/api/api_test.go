@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Privasys/connectors/mail/internal/grant"
 	"github.com/Privasys/connectors/mail/internal/mail"
 	"github.com/Privasys/connectors/mail/internal/store"
 )
@@ -75,8 +76,9 @@ func newTestServer(t *testing.T) (*Server, *fakeDriver) {
 		Text:   "hello",
 	}}
 	s := &Server{
-		store: fakeStore{subs: map[string]store.Account{"user-1": {Provider: "imap"}}},
-		conns: map[string]*conn{"user-1": {drv: drv, used: time.Now()}},
+		store:  fakeStore{subs: map[string]store.Account{"user-1": {Provider: "imap", User: "u@example.com"}}},
+		grants: grant.NewMemory(),
+		conns:  map[string]*conn{"user-1": {drv: drv, used: time.Now()}},
 	}
 	return s, drv
 }
