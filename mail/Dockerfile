@@ -6,15 +6,24 @@
 # is what a wallet screen is talking about.
 
 FROM golang:1.26-alpine AS build
-WORKDIR /src
+RUN apk add --no-cache git
+
+# The RA-TLS client module declares a non-fetchable path, so it is consumed as
+# a sibling checkout at an exact pin rather than by go get. Pinned, never a
+# branch: the attested leg is the thing that decides whether a credential
+# leaves this service, and it must not change under a rebuild.
+ARG RA_TLS_CLIENTS_REF=a5c458d7601eb88ff4eec357037a9421294d8619
+RUN git clone https://github.com/Privasys/ra-tls-clients /build/ra-tls-clients \
+ && git -C /build/ra-tls-clients checkout "${RA_TLS_CLIENTS_REF}"
+WORKDIR /build/mail
 
 # Dependencies first, as their own layer, so a source change does not re-fetch
 # the module graph. -mod=readonly because a build that can edit go.mod can
 # quietly ship a different dependency than the one that was reviewed.
-COPY go.mod go.sum ./
+COPY mail/go.mod mail/go.sum ./
 RUN go mod download
 
-COPY . .
+COPY mail .
 
 # Static, stripped, and with the build paths trimmed. -trimpath matters beyond
 # tidiness: absolute paths from the build machine make the binary, and so the

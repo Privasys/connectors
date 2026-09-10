@@ -16,6 +16,18 @@ jobs:
         working-directory: mail
     steps:
       - uses: actions/checkout@v5
+      # The RA-TLS client module declares a non-fetchable path, so it is
+      # consumed as a sibling checkout. The ref is read from the Dockerfile so
+      # CI cannot pass against a version the image will not contain.
+      - name: Fetch the RA-TLS client at the pin
+        working-directory: .
+        run: |
+          REF=$(sed -n 's/^ARG RA_TLS_CLIENTS_REF=//p' mail/Dockerfile)
+          test -n "$REF" || { echo "no RA_TLS_CLIENTS_REF in mail/Dockerfile"; exit 1; }
+          git clone --quiet https://github.com/Privasys/ra-tls-clients ra-tls-clients
+          git -C ra-tls-clients checkout --quiet "$REF"
+          echo "ra-tls-clients pinned at $REF"
+
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'

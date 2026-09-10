@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Privasys/connectors/mail/internal/api"
+	"github.com/Privasys/connectors/mail/internal/attested"
 	"github.com/Privasys/connectors/mail/internal/broker"
 	"github.com/Privasys/connectors/mail/internal/grant"
 	"github.com/Privasys/connectors/mail/internal/store"
@@ -81,33 +82,36 @@ func main() {
 //
 // The production backend keeps the ciphertext in the USER's Drive under a key
 // sealed to this connector's measurement, so the user's own revoke is the kill
-// switch. It is not built yet. The local backend exists so the connector runs
-// on a workstation, and it is deliberately awkward to select: it puts user
+// switch. The local backend exists so the connector runs on a workstation, and it is deliberately awkward to select: it puts user
 // secrets on the connector's own disk, which is the thing the design says must
 // not happen, so it takes an explicit opt-in rather than being the default
 // that quietly ships.
 func openStore() (store.Store, error) {
 	switch os.Getenv("MAIL_STORE") {
 	case "drive", "":
-		// The store itself is written and tested; what is missing is the
-		// ATTESTED transport it must dial Drive over, mutual RA-TLS with the
-		// peer's measurement pinned. Refusing here is the honest failure: a
-		// plain HTTP client would reach whatever answers the name, which is
-		// precisely the guarantee this store exists to make, so it must not
-		// be quietly substituted to make a deployment start.
-		//
-		// The broker is constructed first so the message distinguishes "not
-		// on the platform" from "on the platform, transport still to wire".
-		if _, err := broker.New(envOr("MAIL_RESOURCE", "storage")); err != nil {
+		// The broker first, so the failure distinguishes "not on the platform"
+		// from "on the platform, misconfigured".
+		b, err := broker.New(envOr("MAIL_RESOURCE", "storage"))
+		if err != nil {
 			return nil, fmt.Errorf("%w; set MAIL_STORE=local to develop off-platform, "+
 				"understanding that it keeps user secrets on this host", err)
 		}
-		if os.Getenv("MAIL_DRIVE_HOST") == "" {
+		host := os.Getenv("MAIL_DRIVE_HOST")
+		if host == "" {
 			return nil, errors.New("MAIL_DRIVE_HOST is required: the resource service is named, never guessed")
 		}
-		return nil, errors.New(
-			"the Drive credential store is implemented but its attested transport is not wired yet; " +
-				"it must dial Drive over mutual RA-TLS with the peer measurement pinned")
+		tr, err := attested.New(host, os.Getenv("MAIL_DRIVE_APP_ID"), os.Getenv("MAIL_DRIVE_DIGEST"))
+		if err != nil {
+			return nil, err
+		}
+		if !tr.Mutual() {
+			// Drive's strict attested-caller check only engages when the
+			// caller can prove what it is. Without that the grant rests on
+			// the key alone, which is weaker than what the holder was shown.
+			log.Print("WARNING: no manager identity, so the Drive leg proves the peer but not us")
+		}
+		log.Printf("credential store: the holder's own Drive at %s, over an attested leg", host)
+		return store.OpenDrive(b, host, envOr("MAIL_SEAL_KEY", "/data/mail-connector/seal.key"), tr)
 	case "local":
 		dir := os.Getenv("MAIL_STORE_DIR")
 		if dir == "" {

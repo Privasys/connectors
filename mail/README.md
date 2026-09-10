@@ -145,12 +145,27 @@ the manager thinks it is.
 that rotates it is a re-link event for every holder and must be planned as
 one rather than discovered.
 
+## The attested leg
+
+The call to Drive goes over RA-TLS, not ordinary TLS. Two reasons, and the
+second is the real one: the enclave gateway refuses plaintext app traffic so
+the call would not arrive, and server-auth TLS proves only that something
+answered the name, on a leg that carries a holder's mailbox credential.
+
+The peer's quote is bound to that handshake, so a replayed certificate cannot
+pass. The peer's app id is then checked against , and its
+build against  when one is pinned. All of it happens
+before the connection is handed to the pool, so no byte of a credential
+reaches a channel whose far end has not been checked.
+
+This transport dials one host and refuses every other, which is narrower than
+it needs to be today and stops a control plane that starts pointing this
+connector elsewhere from moving its traffic.
+
+The RA-TLS client module declares a non-fetchable path, so it is consumed as a
+sibling checkout at an exact pin: cloned by the Dockerfile and by CI from the
+same ref, symlinked for local work, never committed here.
+
 ## Not built yet
 
-The **attested transport** the Drive store must dial over: mutual RA-TLS with
-the peer's measurement pinned. The store itself is written and tested, and the
-service refuses to start without that transport rather than substituting a
-plain client, because reaching whatever answers the name is exactly the
-guarantee this store exists to make.
-
-Then the Microsoft Graph and Gmail API drivers.
+The Microsoft Graph and Gmail API drivers, and deployment to a fleet.
