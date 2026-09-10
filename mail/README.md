@@ -153,10 +153,14 @@ the call would not arrive, and server-auth TLS proves only that something
 answered the name, on a leg that carries a holder's mailbox credential.
 
 The peer's quote is bound to that handshake, so a replayed certificate cannot
-pass. The peer's app id is then checked against , and its
-build against  when one is pinned. All of it happens
-before the connection is handed to the pool, so no byte of a credential
-reaches a channel whose far end has not been checked.
+pass. Its app id is then checked against `MAIL_DRIVE_APP_ID`, and its build
+against `MAIL_DRIVE_DIGEST` when one is pinned. All of it happens before the
+connection reaches the pool, so no byte of a credential is written to a
+channel whose far end has not been checked.
+
+Identity is pinned by app id rather than by measurement, so an ordinary Drive
+release does not break the leg. The digest pin is for when a specific build
+has been admitted, and a peer that presents no digest does not satisfy one.
 
 This transport dials one host and refuses every other, which is narrower than
 it needs to be today and stops a control plane that starts pointing this
