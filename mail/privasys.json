@@ -28,6 +28,20 @@
             "x-privasys": {
               "label": "Pinned build (optional)"
             }
+          },
+          "idp_issuer": {
+            "type": "string",
+            "description": "Whose tokens prove WHICH PERSON is calling, when a wallet dials this connector to approve a mailbox. This is the root of holder identity here: it decides whose approval the connector will honour. Leave empty for the platform's own identity provider. Must be https.",
+            "x-privasys": {
+              "label": "Identity provider (optional)"
+            }
+          },
+          "idp_audience": {
+            "type": "string",
+            "description": "The audience those tokens must carry, so a token minted for another service cannot be replayed at this one. Leave empty for the platform default.",
+            "x-privasys": {
+              "label": "Token audience (optional)"
+            }
           }
         },
         "required": [

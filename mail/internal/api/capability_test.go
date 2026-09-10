@@ -4,12 +4,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Privasys/connectors/mail/internal/holder"
 )
 
 const testApp = "590ebdc31b63401fbbb822d5f3886c5e"
@@ -45,7 +48,7 @@ func mint(t *testing.T, s *Server, sub string, perms []string) string {
 		"request":        map[string]any{"label": "Inbox"},
 	})
 	r := httptest.NewRequest(http.MethodPost, "/v1/capabilities", strings.NewReader(string(body)))
-	r.Header.Set(SubjectHeader, sub)
+	r.Header.Set(RelaySubjectHeader, sub)
 	w := httptest.NewRecorder()
 	s.Routes().ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
@@ -142,7 +145,7 @@ func TestRevokeStopsAccess(t *testing.T) {
 	}
 
 	r := httptest.NewRequest(http.MethodDelete, "/v1/grants/"+id, nil)
-	r.Header.Set(SubjectHeader, "user-1")
+	r.Header.Set(RelaySubjectHeader, "user-1")
 	w := httptest.NewRecorder()
 	s.Routes().ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
@@ -159,7 +162,7 @@ func TestAppsWithAccessListing(t *testing.T) {
 	mint(t, s, "user-1", []string{"read", "write"})
 
 	r := httptest.NewRequest(http.MethodGet, "/v1/apps", nil)
-	r.Header.Set(SubjectHeader, "user-1")
+	r.Header.Set(RelaySubjectHeader, "user-1")
 	w := httptest.NewRecorder()
 	s.Routes().ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
@@ -184,7 +187,7 @@ func TestAppsWithAccessListing(t *testing.T) {
 	// Another holder sees nothing, and specifically an empty list rather than
 	// a null, so a client can render it without a special case.
 	r2 := httptest.NewRequest(http.MethodGet, "/v1/apps", nil)
-	r2.Header.Set(SubjectHeader, "user-2")
+	r2.Header.Set(RelaySubjectHeader, "user-2")
 	w2 := httptest.NewRecorder()
 	s.Routes().ServeHTTP(w2, r2)
 	if !strings.Contains(w2.Body.String(), `"apps":[]`) {
@@ -201,7 +204,7 @@ func TestMintRefusesWhenNoMailboxIsLinked(t *testing.T) {
 		"permissions": []string{"read"}, "expires_unix": time.Now().Add(time.Hour).Unix(),
 	})
 	r := httptest.NewRequest(http.MethodPost, "/v1/capabilities", strings.NewReader(string(body)))
-	r.Header.Set(SubjectHeader, "user-with-no-mailbox")
+	r.Header.Set(RelaySubjectHeader, "user-with-no-mailbox")
 	w := httptest.NewRecorder()
 	s.Routes().ServeHTTP(w, r)
 	if w.Code != http.StatusPreconditionFailed {
@@ -220,7 +223,7 @@ func TestMintRefusesARequestThatNamesTheHolder(t *testing.T) {
 			"request": map[string]any{field: "victim@example.com"},
 		})
 		r := httptest.NewRequest(http.MethodPost, "/v1/capabilities", strings.NewReader(string(body)))
-		r.Header.Set(SubjectHeader, "user-1")
+		r.Header.Set(RelaySubjectHeader, "user-1")
 		w := httptest.NewRecorder()
 		s.Routes().ServeHTTP(w, r)
 		if w.Code != http.StatusBadRequest {
@@ -281,4 +284,119 @@ func TestFailsClosedByDefault(t *testing.T) {
 	if !s.requireGrant {
 		t.Fatal("New(..., true) must enforce")
 	}
+}
+
+// The defect this locks out: the holder-facing endpoints once read the acting
+// user from X-Privasys-On-Behalf-Of, which the CALLING APP writes. Any app
+// that could reach this service could therefore mint itself a capability over
+// any mailbox it cared to name, with no wallet screen ever drawn, and then
+// pass its own enforcement check forever after.
+//
+// The app names the user it ACTS FOR. Only the platform, or the person's own
+// verified token, names the user who DECIDES.
+func TestActingUserHeaderCannotEstablishAHolder(t *testing.T) {
+	s, _ := guardedServer(t)
+
+	body, _ := json.Marshal(map[string]any{
+		"nonce":          "n-evil",
+		"subject_app_id": testApp,
+		"kind":           "mail.mailbox",
+		"permissions":    []string{"read", "write"},
+		"expires_unix":   time.Now().Add(24 * time.Hour).Unix(),
+	})
+
+	for _, c := range []struct {
+		what   string
+		method string
+		path   string
+		body   string
+	}{
+		{"mint a capability", http.MethodPost, "/v1/capabilities", string(body)},
+		{"list what a holder approved", http.MethodGet, "/v1/apps", ""},
+		{"revoke a holder's approval", http.MethodDelete, "/v1/grants/whatever", ""},
+		{"see a holder's mailbox", http.MethodGet, "/v1/link", ""},
+		{"link a mailbox", http.MethodPost, "/v1/link", `{"user":"a@b.example","password":"x"}`},
+		{"disconnect a mailbox", http.MethodDelete, "/v1/link", ""},
+	} {
+		var r *http.Request
+		if c.body == "" {
+			r = httptest.NewRequest(c.method, c.path, nil)
+		} else {
+			r = httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
+		}
+		// Everything an attested calling app can legitimately assert, and
+		// nothing a person or the platform asserts.
+		r.Header.Set(SubjectHeader, "somebody-elses-mailbox")
+		r.Header.Set(PeerAppHeader, testApp)
+		w := httptest.NewRecorder()
+		s.Routes().ServeHTTP(w, r)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("an app must not be able to %s: %s %s returned %d %s",
+				c.what, c.method, c.path, w.Code, w.Body)
+		}
+	}
+
+	// And nothing was created along the way.
+	r := httptest.NewRequest(http.MethodGet, "/v1/apps", nil)
+	r.Header.Set(RelaySubjectHeader, "somebody-elses-mailbox")
+	w := httptest.NewRecorder()
+	s.Routes().ServeHTTP(w, r)
+	if !strings.Contains(w.Body.String(), `"apps":[]`) {
+		t.Fatalf("a capability was minted after all: %s", w.Body)
+	}
+}
+
+// A bearer is only a holder once it VERIFIES. With no verifier installed,
+// which is the state before configure names an issuer, every bearer is
+// refused rather than taken at face value.
+func TestBearerWithoutAVerifierIsNobody(t *testing.T) {
+	s, _ := guardedServer(t)
+	s.SetVerifier(nil)
+
+	r := httptest.NewRequest(http.MethodGet, "/v1/apps", nil)
+	r.Header.Set("Authorization", "Bearer "+strings.Repeat("a", 40))
+	w := httptest.NewRecorder()
+	s.Routes().ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("an unverifiable bearer must not be a holder, got %d %s", w.Code, w.Body)
+	}
+}
+
+// A verified token names the holder, and names only the holder: the subject
+// comes from the token, never from anything the caller also sent.
+func TestVerifiedBearerNamesTheHolder(t *testing.T) {
+	s, _ := guardedServer(t)
+	s.SetVerifier(fakeVerifier{sub: "user-1"})
+
+	r := httptest.NewRequest(http.MethodGet, "/v1/apps", nil)
+	r.Header.Set("Authorization", "Bearer anything")
+	// A caller that also claims to be acting for someone else must not shift
+	// whose approvals come back.
+	r.Header.Set(SubjectHeader, "user-2")
+	w := httptest.NewRecorder()
+	s.Routes().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("a verified holder should be served: %d %s", w.Code, w.Body)
+	}
+
+	mint(t, s, "user-1", []string{"read"})
+	r = httptest.NewRequest(http.MethodGet, "/v1/apps", nil)
+	r.Header.Set("Authorization", "Bearer anything")
+	w = httptest.NewRecorder()
+	s.Routes().ServeHTTP(w, r)
+	if !strings.Contains(w.Body.String(), testApp) {
+		t.Fatalf("the token's own subject should be the holder: %s", w.Body)
+	}
+}
+
+type fakeVerifier struct {
+	sub string
+	err error
+}
+
+func (f fakeVerifier) Verify(context.Context, string) (*holder.Identity, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &holder.Identity{Sub: f.sub}, nil
 }

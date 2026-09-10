@@ -66,7 +66,7 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 	})
 
 	m.HandleFunc("GET /v1/link", func(w http.ResponseWriter, r *http.Request) {
-		sub := holder(r)
+		sub := s.holder(r)
 		if sub == "" {
 			writeErr(w, http.StatusUnauthorized, "this call is not authenticated as a holder")
 			return
@@ -89,7 +89,7 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 	})
 
 	m.HandleFunc("POST /v1/link", func(w http.ResponseWriter, r *http.Request) {
-		sub := holder(r)
+		sub := s.holder(r)
 		if sub == "" {
 			writeErr(w, http.StatusUnauthorized, "this call is not authenticated as a holder")
 			return
@@ -148,7 +148,7 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 	})
 
 	m.HandleFunc("DELETE /v1/link", func(w http.ResponseWriter, r *http.Request) {
-		sub := holder(r)
+		sub := s.holder(r)
 		if sub == "" {
 			writeErr(w, http.StatusUnauthorized, "this call is not authenticated as a holder")
 			return

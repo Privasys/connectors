@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 // The app-defined extension arc. The runtime stamps identity itself and drops
@@ -53,7 +54,20 @@ func (s *Server) extensionsRoute(m *http.ServeMux) {
 				// configuration is in force, and an operator who knows the
 				// settings can prove it matches. Publishing the values instead
 				// would put the peer's identity in every handshake for no gain.
-				sum := sha256.Sum256([]byte(cur.DriveHost + "\x00" + cur.DriveAppID + "\x00" + cur.DriveDigest))
+				//
+				// The IDENTITY PROVIDER is in the digest as well as the storage
+				// peer, and it belongs there for the stronger reason. Which
+				// enclave holds the ciphertext decides who can read a
+				// credential; which issuer is trusted decides whose approval
+				// can hand one over. Attesting the first without the second
+				// would answer the easier half of the question.
+				//
+				// NUL-separated so no combination of values can be rearranged
+				// into the same digest as another.
+				sum := sha256.Sum256([]byte(strings.Join([]string{
+					cur.DriveHost, cur.DriveAppID, cur.DriveDigest,
+					cur.IdpIssuer, cur.IdpAudience,
+				}, "\x00")))
 				entries = append(entries, extensionEntry{
 					OID:   oidConfigDigest,
 					Value: derOctetString(sum[:]),

@@ -89,7 +89,7 @@ func (s *Server) capabilityRoutes(m *http.ServeMux) {
 	// holder is therefore whoever authenticated, and is never read from the
 	// body: that is the one thing this endpoint must not accept being told.
 	m.HandleFunc("POST /v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
-		sub := holder(r)
+		sub := s.holder(r)
 		if sub == "" {
 			writeErr(w, http.StatusUnauthorized, "this call is not authenticated as a holder")
 			return
@@ -151,7 +151,7 @@ func (s *Server) capabilityRoutes(m *http.ServeMux) {
 	// and revocation belong next to the data, so this is the button that
 	// actually removes access rather than a request to be honoured elsewhere.
 	m.HandleFunc("GET /v1/apps", func(w http.ResponseWriter, r *http.Request) {
-		sub := holder(r)
+		sub := s.holder(r)
 		if sub == "" {
 			writeErr(w, http.StatusUnauthorized, "this call is not authenticated as a holder")
 			return
@@ -168,7 +168,7 @@ func (s *Server) capabilityRoutes(m *http.ServeMux) {
 	})
 
 	m.HandleFunc("DELETE /v1/grants/{id}", func(w http.ResponseWriter, r *http.Request) {
-		sub := holder(r)
+		sub := s.holder(r)
 		if sub == "" {
 			writeErr(w, http.StatusUnauthorized, "this call is not authenticated as a holder")
 			return
@@ -185,12 +185,39 @@ func (s *Server) capabilityRoutes(m *http.ServeMux) {
 	})
 }
 
-// holder is the authenticated user.
+// RelaySubjectHeader is the identity the RUNTIME asserts for a person behind
+// the sealed transport. The session-relay middleware strips any inbound value
+// on every path before dispatching, so a caller cannot supply it; that
+// stripping is the whole reason this header can be trusted and the reason it
+// is not the same header an app uses to name the user it acts for.
+const RelaySubjectHeader = "X-Privasys-Sub"
+
+// holder is the authenticated PERSON, established two ways and no others: the
+// relay-asserted subject, or a bearer token from the platform's identity
+// provider that this service verifies itself.
 //
-// On the platform this comes from the sealed transport, which the relay sets
-// after the wallet has authenticated the person; the same header carries it
-// here. It is never taken from a body, because the body is written by the app
-// that wants the access.
-func holder(r *http.Request) string {
-	return strings.TrimSpace(r.Header.Get(SubjectHeader))
+// It deliberately does NOT read X-Privasys-On-Behalf-Of, and an earlier
+// version of this file did, which was a privilege escalation rather than an
+// untidiness. That header is written by the calling app. Trusting it here
+// would have let the very app that wants access to a mailbox mint itself the
+// capability granting it, for any user it cared to name, without a wallet
+// screen ever being drawn. The app names the user it ACTS FOR; only the
+// platform, or the person's own token, names the user who DECIDES.
+//
+// Failing closed matters more here than a helpful error, so an unverifiable
+// token is the same answer as no token: this call is not a holder.
+func (s *Server) holder(r *http.Request) string {
+	if sub := strings.TrimSpace(r.Header.Get(RelaySubjectHeader)); sub != "" {
+		return sub
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	v := s.verifier()
+	if !strings.HasPrefix(auth, "Bearer ") || v == nil {
+		return ""
+	}
+	id, err := v.Verify(r.Context(), strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")))
+	if err != nil || id == nil {
+		return ""
+	}
+	return id.Sub
 }

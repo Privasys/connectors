@@ -25,6 +25,7 @@ import (
 	"github.com/Privasys/connectors/mail/internal/broker"
 	"github.com/Privasys/connectors/mail/internal/config"
 	"github.com/Privasys/connectors/mail/internal/grant"
+	"github.com/Privasys/connectors/mail/internal/holder"
 	"github.com/Privasys/connectors/mail/internal/store"
 )
 
@@ -50,6 +51,13 @@ func main() {
 
 	srv := api.New(st, grant.NewMemory(), requireGrant())
 
+	// Who this deployment will accept as a HOLDER. The platform's own issuer
+	// unless configure replaces it, which it does on the same lock as the
+	// credential store. Installed here as well as there so that a restart of
+	// an already-configured deployment can verify a wallet's token before
+	// anyone reconfigures it.
+	srv.SetVerifier(holder.NewJWKS(holder.DefaultIssuer, holder.DefaultAudience))
+
 	// Configure-then-freeze. A deployment that has never been configured still
 	// starts and serves /configure; everything else answers 503 until it has
 	// been. Refusing to boot would leave an operator nothing to configure.
@@ -73,6 +81,9 @@ func main() {
 		}
 		srv.SetStore(st)
 		srv.SetConfigurable(path, buildStore, cfg, found && st != nil)
+		if found {
+			srv.SetVerifier(holder.NewJWKS(cfg.IdpIssuer, cfg.IdpAudience))
+		}
 		if st == nil {
 			log.Print("not configured yet: serving /configure and nothing else")
 		}
@@ -108,14 +119,6 @@ func main() {
 	log.Print("stopped")
 }
 
-// openStore picks the credential backend.
-//
-// The production backend keeps the ciphertext in the USER's Drive under a key
-// sealed to this connector's measurement, so the user's own revoke is the kill
-// switch. The local backend exists so the connector runs on a workstation, and it is deliberately awkward to select: it puts user
-// secrets on the connector's own disk, which is the thing the design says must
-// not happen, so it takes an explicit opt-in rather than being the default
-// that quietly ships.
 // buildStore turns a configuration into the production credential store.
 //
 // Everything it needs beyond the configuration comes from the runtime: the

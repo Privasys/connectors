@@ -48,17 +48,50 @@ mail still reads as a login mail.
 
 Two independent facts must both hold before any tool call touches a mailbox.
 
-The **holder** is asserted by the platform in `X-Privasys-On-Behalf-Of`, on a
-leg the runtime has already authenticated. A call without one is refused, not
-defaulted: an app that could name its own subject could read anyone's mail.
+The **acting user** is named by the calling app in `X-Privasys-On-Behalf-Of`,
+on a leg the runtime has already authenticated. A call without one is refused,
+not defaulted.
 
 The **calling app** is the identity the runtime verified from the mutual
 RA-TLS client certificate, and there must be a live capability for that app
-and that holder carrying the permission the call needs. Read and write are
+and that user carrying the permission the call needs. Read and write are
 separate checks, because they are separate sentences on the approval screen.
 
 Enforcement fails closed and the switch is explicit, so a zero value cannot
 quietly be permissive.
+
+### The user who acts, and the user who decides
+
+These are not the same question, and the connector answers them with different
+evidence on purpose.
+
+`X-Privasys-On-Behalf-Of` is written by the calling app. That is exactly right
+for "read this person's mail under a capability they already approved", and
+worthless for "this person approves a capability". If the same header were
+good enough for both, the app that wants access could grant itself access and
+no wallet screen would ever be drawn.
+
+So the **holder-facing** endpoints (linking a mailbox, minting a capability,
+listing and revoking approvals) never read it. A holder is established one of
+exactly two ways:
+
+- **`X-Privasys-Sub`**, which the runtime's session-relay middleware sets from
+  a wallet-authenticated sealed session and strips from every inbound request
+  before dispatch. That stripping is what makes it trustworthy, and it is the
+  person sitting in front of the linking page.
+- **A bearer token from the configured identity provider**, verified here
+  against its key set. That is the wallet, dialling this connector directly
+  over RA-TLS to approve a mailbox, with no relay in between.
+
+Verification is offline apart from a cached key set, so a mailbox is never
+opened by asking the platform about the person whose mail it is. An
+unverifiable token is treated exactly as no token at all.
+
+Which issuer is trusted is part of the configuration, and part of the hash
+this service publishes into its own certificate. It decides whose approval
+this deployment will honour, which makes it a stronger claim than which
+storage peer it uses: one says who can read a stored credential, the other
+says whose say-so can hand one over.
 
 ## Endpoints
 

@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/Privasys/connectors/mail/internal/config"
+	"github.com/Privasys/connectors/mail/internal/holder"
 	"github.com/Privasys/connectors/mail/internal/store"
 )
 
@@ -85,6 +86,12 @@ func (s *Server) configureRoutes(m *http.ServeMux) {
 		s.mu.Lock()
 		old := s.store
 		s.store = st
+		// The issuer that decides who a HOLDER is arrives with the same
+		// configuration as the peer that stores their credential, and must be
+		// swapped in the same breath: a window where the new issuer is stored
+		// but the old one is still verifying is a window where the wrong
+		// person's approval would be honoured.
+		s.tokens = holder.NewJWKS(in.IdpIssuer, in.IdpAudience)
 		// Cached mailbox connections belong to the previous store's
 		// credentials, so they must not survive a reconfiguration.
 		for sub, c := range s.conns {
@@ -127,6 +134,11 @@ func (s *Server) configureRoutes(m *http.ServeMux) {
 			"configured": set,
 			"drive_host": cur.DriveHost,
 			"pinned_app": cur.DriveAppID,
+			// Whose approvals this deployment will honour. Worth showing: an
+			// operator who cannot see the issuer cannot tell whose wallet can
+			// grant access to a mailbox here.
+			"idp_issuer":   cur.IdpIssuer,
+			"idp_audience": cur.IdpAudience,
 		})
 	})
 }

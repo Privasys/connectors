@@ -64,7 +64,7 @@ func do(t *testing.T, s *Server, method, path, sub, body string) *httptest.Respo
 		r = httptest.NewRequest(method, path, strings.NewReader(body))
 	}
 	if sub != "" {
-		r.Header.Set(SubjectHeader, sub)
+		r.Header.Set(RelaySubjectHeader, sub)
 	}
 	w := httptest.NewRecorder()
 	s.Routes().ServeHTTP(w, r)

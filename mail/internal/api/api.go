@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/Privasys/connectors/mail/internal/grant"
+	"github.com/Privasys/connectors/mail/internal/holder"
 	"github.com/Privasys/connectors/mail/internal/imapdrv"
 	"github.com/Privasys/connectors/mail/internal/mail"
 	"github.com/Privasys/connectors/mail/internal/store"
@@ -55,8 +56,32 @@ type Server struct {
 	// configuration.
 	cfg *configurable
 
+	// tokens verifies a holder's own bearer token, which is how the WALLET
+	// identifies the person when it dials this service directly to mint a
+	// capability. Nil until configure names an issuer, and a nil verifier
+	// refuses every bearer rather than accepting any.
+	tokens holder.Verifier
+
 	mu    sync.Mutex
 	conns map[string]*conn
+}
+
+// SetVerifier installs the holder-token verifier. Separate from New because
+// the issuer arrives with the configuration, not at startup, and configure can
+// replace it while requests are in flight.
+func (s *Server) SetVerifier(v holder.Verifier) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokens = v
+}
+
+// verifier reads it back under the same lock. Every field configure can swap
+// needs this: the read that would have bitten is a wallet call verifying
+// against a verifier being replaced.
+func (s *Server) verifier() holder.Verifier {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tokens
 }
 
 type conn struct {
