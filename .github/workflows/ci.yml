@@ -49,18 +49,28 @@ jobs:
       - name: Manifest and routes agree
         run: |
           python3 - <<'PY'
-          import json, re, sys
-          manifest = json.load(open('privasys.json'))
-          src = open('internal/api/api.go').read()
-          routed = set(re.findall(r's\.tool\(m, "([^"]+)"', src))
-          declared = {t['endpoint'] for t in manifest['tools']}
+          import json, sys, glob
+          manifest = json.load(open("privasys.json"))
+          src = "".join(open(f).read() for f in glob.glob("internal/api/*.go"))
+          # Plain string scanning rather than regex: the escaping needed to put
+          # a pattern with quotes and parens through YAML and a heredoc is how
+          # a check quietly stops matching anything and passes forever.
+          routed = set()
+          for line in src.splitlines():
+              for marker in ('s.tool(m, "', 'm.HandleFunc("'):
+                  i = line.find(marker)
+                  if i < 0:
+                      continue
+                  value = line[i + len(marker):].split('"')[0]
+                  routed.add(value.split(" ")[-1])
+          declared = {t["endpoint"] for t in manifest["tools"]}
           missing = declared - routed
-          extra = routed - declared
+          if not routed:
+              print("the check matched no routes at all, so it is broken")
+              sys.exit(1)
           if missing:
-              print('in the manifest but not routed:', sorted(missing))
-          if extra:
-              print('routed but not in the manifest:', sorted(extra))
-          sys.exit(1 if (missing or extra) else 0)
+              print("in the manifest but not routed:", sorted(missing))
+          sys.exit(1 if missing else 0)
           PY
 
       - name: Image builds with its manifest

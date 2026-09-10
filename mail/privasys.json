@@ -1,6 +1,42 @@
 {
   "tools": [
     {
+      "name": "configure",
+      "role": "config",
+      "endpoint": "/configure",
+      "description": "Point this connector at the storage service it keeps holders' credentials in. No secret is set here: everything below names a PEER, and a holder's mailbox password never travels this path. The service serves nothing until this succeeds.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "drive_host": {
+            "type": "string",
+            "description": "Hostname of the storage service, e.g. drive-demo.apps.test.privasys.org.",
+            "x-privasys": {
+              "label": "Storage service host"
+            }
+          },
+          "drive_app_id": {
+            "type": "string",
+            "description": "That service's 32-character app id. Required: without it the attested dial would trust any enclave that answers the name.",
+            "x-privasys": {
+              "label": "Storage app id"
+            }
+          },
+          "drive_digest": {
+            "type": "string",
+            "description": "Optional 64-character sha256 pinning a specific build. Leave empty to accept any build of that app, so an ordinary release does not take every mailbox offline.",
+            "x-privasys": {
+              "label": "Pinned build (optional)"
+            }
+          }
+        },
+        "required": [
+          "drive_host",
+          "drive_app_id"
+        ]
+      }
+    },
+    {
       "name": "list_messages",
       "role": "inference",
       "description": "List recent messages as headers, newest first, without bodies. Use this to see what has arrived and decide what is worth opening. Always returns a bounded window: a real mailbox holds tens of thousands of messages and there is no way to list them all. Each header says whether the sender is repliable, so never draft a reply to one that is not.",
@@ -265,6 +301,10 @@
       ]
     }
   ],
+  "config_api": {
+    "method": "POST",
+    "path": "/configure"
+  },
   "readiness_path": "/readiness",
   "status_path": "/health"
 }

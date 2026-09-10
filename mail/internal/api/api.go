@@ -51,6 +51,10 @@ type Server struct {
 	// connector that serves mail without checking is the whole risk.
 	requireGrant bool
 
+	// cfg is the configure-then-freeze state, nil when the deployment takes no
+	// configuration.
+	cfg *configurable
+
 	mu    sync.Mutex
 	conns map[string]*conn
 }
@@ -89,7 +93,11 @@ func (s *Server) driverFor(ctx context.Context, sub string) (mail.Driver, error)
 	}
 	s.mu.Unlock()
 
-	acct, err := s.store.Get(ctx, sub)
+	cs := s.credStore()
+	if cs == nil {
+		return nil, errNotConfigured
+	}
+	acct, err := cs.Get(ctx, sub)
 	if err != nil {
 		return nil, err
 	}
@@ -148,6 +156,7 @@ func (s *Server) Routes() *http.ServeMux {
 
 	s.capabilityRoutes(m)
 	s.linkRoutes(m)
+	s.configureRoutes(m)
 
 	return m
 }
@@ -166,6 +175,11 @@ func (s *Server) tool(m *http.ServeMux, path string, need grant.Permission, h ha
 				"this call carries no acting user; the platform must assert one")
 			return
 		}
+		if !s.configured() {
+			writeErr(w, http.StatusServiceUnavailable,
+				"this deployment has not been configured yet, so it has nowhere to keep a credential")
+			return
+		}
 		if err := s.authorise(r, sub, need); err != nil {
 			writeErr(w, http.StatusForbidden, err.Error())
 			return
@@ -173,6 +187,13 @@ func (s *Server) tool(m *http.ServeMux, path string, need grant.Permission, h ha
 		var body json.RawMessage
 		if r.Body != nil {
 			body, _ = readLimited(r, 1<<20)
+		}
+		s.mu.Lock()
+		haveStore := s.store != nil
+		s.mu.Unlock()
+		if !haveStore {
+			writeErr(w, http.StatusServiceUnavailable, "this deployment has no credential store yet")
+			return
 		}
 		drv, err := s.driverFor(r.Context(), sub)
 		if err != nil {
@@ -411,7 +432,11 @@ func (s *Server) changes(ctx context.Context, _ string, drv mail.Driver, body js
 }
 
 func (s *Server) account(ctx context.Context, sub string, _ mail.Driver, _ json.RawMessage) (any, error) {
-	a, err := s.store.Get(ctx, sub)
+	cs := s.credStore()
+	if cs == nil {
+		return nil, errNotConfigured
+	}
+	a, err := cs.Get(ctx, sub)
 	if err != nil {
 		return nil, err
 	}

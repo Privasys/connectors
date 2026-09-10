@@ -50,7 +50,13 @@ func linkFromFile(sub, path string) error {
 	if c.Host == "" {
 		c.Host = "imap.gmail.com:993"
 	}
-	st, err := openStore()
+	// The development link path only ever writes to the local store; the
+	// production one is reached through the running service, where the
+	// holder authenticates.
+	if os.Getenv("MAIL_STORE") != "local" {
+		return errors.New("-link is a development affordance: set MAIL_STORE=local")
+	}
+	st, _, err := openStore()
 	if err != nil {
 		return err
 	}

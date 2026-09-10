@@ -71,7 +71,12 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 			writeErr(w, http.StatusUnauthorized, "this call is not authenticated as a holder")
 			return
 		}
-		acct, err := s.store.Get(r.Context(), sub)
+		cs := s.credStore()
+		if cs == nil {
+			writeErr(w, http.StatusServiceUnavailable, errNotConfigured.Error())
+			return
+		}
+		acct, err := cs.Get(r.Context(), sub)
 		if errors.Is(err, store.ErrNoAccount) {
 			writeJSON(w, http.StatusOK, map[string]any{"linked": false})
 			return
@@ -121,7 +126,12 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 			return
 		}
 
-		if err := s.store.Put(r.Context(), sub, store.Account{
+		cs := s.credStore()
+		if cs == nil {
+			writeErr(w, http.StatusServiceUnavailable, errNotConfigured.Error())
+			return
+		}
+		if err := cs.Put(r.Context(), sub, store.Account{
 			Provider: "imap", Host: req.Host, User: req.User, Secret: req.Password,
 			OwnDomains: cleanDomains(req.OwnDomains), LinkedAt: time.Now(),
 		}); err != nil {
@@ -143,7 +153,12 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 			writeErr(w, http.StatusUnauthorized, "this call is not authenticated as a holder")
 			return
 		}
-		if err := s.store.Delete(r.Context(), sub); err != nil {
+		cs := s.credStore()
+		if cs == nil {
+			writeErr(w, http.StatusServiceUnavailable, errNotConfigured.Error())
+			return
+		}
+		if err := cs.Delete(r.Context(), sub); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}

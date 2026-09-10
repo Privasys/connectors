@@ -13,7 +13,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -24,6 +23,7 @@ import (
 	"github.com/Privasys/connectors/mail/internal/api"
 	"github.com/Privasys/connectors/mail/internal/attested"
 	"github.com/Privasys/connectors/mail/internal/broker"
+	"github.com/Privasys/connectors/mail/internal/config"
 	"github.com/Privasys/connectors/mail/internal/grant"
 	"github.com/Privasys/connectors/mail/internal/store"
 )
@@ -43,15 +43,45 @@ func main() {
 		port = "8000"
 	}
 
-	st, err := openStore()
+	st, needsConfig, err := openStore()
 	if err != nil {
 		log.Fatalf("credential store: %v", err)
 	}
-	defer st.Close()
 
-	srv := &http.Server{
+	srv := api.New(st, grant.NewMemory(), requireGrant())
+
+	// Configure-then-freeze. A deployment that has never been configured still
+	// starts and serves /configure; everything else answers 503 until it has
+	// been. Refusing to boot would leave an operator nothing to configure.
+	if needsConfig {
+		path := envOr("MAIL_CONFIG", "/data/mail-connector/config.json")
+		cfg, found, cerr := config.Load(path)
+		if cerr != nil {
+			// Stored settings that will not parse or will not validate: refuse
+			// rather than run on half of them. A connector pointed at an
+			// unpinned peer is worse than one that will not start.
+			log.Fatalf("configuration at %s: %v", path, cerr)
+		}
+		if found {
+			built, berr := buildStore(cfg)
+			if berr != nil {
+				log.Printf("stored configuration will not open a store yet (%v); serving /configure only", berr)
+			} else {
+				st = built
+				log.Printf("credential store: holders' own Drive at %s, over an attested leg", cfg.DriveHost)
+			}
+		}
+		srv.SetStore(st)
+		srv.SetConfigurable(path, buildStore, cfg, found && st != nil)
+		if st == nil {
+			log.Print("not configured yet: serving /configure and nothing else")
+		}
+	}
+	defer srv.Close()
+
+	httpSrv := &http.Server{
 		Addr:    ":" + port,
-		Handler: api.New(st, grant.NewMemory(), requireGrant()).Handler(),
+		Handler: srv.Handler(),
 		// A tool call may long-poll the mailbox for up to a minute, so the
 		// write timeout has to clear that with room, or Changes would be cut
 		// off by our own server rather than by the caller's deadline.
@@ -63,7 +93,7 @@ func main() {
 
 	go func() {
 		log.Printf("mail-connector listening on :%s", port)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("serve: %v", err)
 		}
 	}()
@@ -74,7 +104,7 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	_ = srv.Shutdown(ctx)
+	_ = httpSrv.Shutdown(ctx)
 	log.Print("stopped")
 }
 
@@ -86,46 +116,55 @@ func main() {
 // secrets on the connector's own disk, which is the thing the design says must
 // not happen, so it takes an explicit opt-in rather than being the default
 // that quietly ships.
-func openStore() (store.Store, error) {
-	switch os.Getenv("MAIL_STORE") {
-	case "drive", "":
-		// The broker first, so the failure distinguishes "not on the platform"
-		// from "on the platform, misconfigured".
-		b, err := broker.New(envOr("MAIL_RESOURCE", "storage"))
-		if err != nil {
-			return nil, fmt.Errorf("%w; set MAIL_STORE=local to develop off-platform, "+
-				"understanding that it keeps user secrets on this host", err)
-		}
-		host := os.Getenv("MAIL_DRIVE_HOST")
-		if host == "" {
-			return nil, errors.New("MAIL_DRIVE_HOST is required: the resource service is named, never guessed")
-		}
-		tr, err := attested.New(host, os.Getenv("MAIL_DRIVE_APP_ID"), os.Getenv("MAIL_DRIVE_DIGEST"))
-		if err != nil {
-			return nil, err
-		}
-		if !tr.Mutual() {
-			// Drive's strict attested-caller check only engages when the
-			// caller can prove what it is. Without that the grant rests on
-			// the key alone, which is weaker than what the holder was shown.
-			log.Print("WARNING: no manager identity, so the Drive leg proves the peer but not us")
-		}
-		log.Printf("credential store: the holder's own Drive at %s, over an attested leg", host)
-		return store.OpenDrive(b, host, envOr("MAIL_SEAL_KEY", "/data/mail-connector/seal.key"), tr)
-	case "local":
-		dir := os.Getenv("MAIL_STORE_DIR")
-		if dir == "" {
-			dir = "./.mail-store"
-		}
+// buildStore turns a configuration into the production credential store.
+//
+// Everything it needs beyond the configuration comes from the runtime: the
+// capability broker over loopback, and the identity the manager mints for the
+// attested leg. Off the platform those are absent and this fails, which is the
+// right outcome — the development store is chosen explicitly, never fallen
+// back to.
+func buildStore(c config.Config) (store.Store, error) {
+	b, err := broker.New(envOr("MAIL_RESOURCE", "storage"))
+	if err != nil {
+		return nil, err
+	}
+	tr, err := attested.New(c.DriveHost, c.DriveAppID, c.DriveDigest)
+	if err != nil {
+		return nil, err
+	}
+	if !tr.Mutual() {
+		// Drive's strict attested-caller check only engages when the caller
+		// can prove what it is. Without it the grant rests on the key alone,
+		// which is weaker than the sentence the holder was shown.
+		log.Print("WARNING: no manager identity, so the Drive leg proves the peer but not us")
+	}
+	return store.OpenDrive(b, c.DriveHost, envOr("MAIL_SEAL_KEY", "/data/mail-connector/seal.key"), tr)
+}
+
+// openStore picks the credential backend.
+//
+// The production backend keeps ciphertext in the HOLDER's Drive under a key
+// sealed to this app's volume, so their own revoke is the kill switch. It is
+// configured through the platform rather than the environment, and until that
+// has happened the service still starts and serves only /configure. That is
+// what configure-then-freeze means: refusing to boot would leave an operator
+// with nothing to configure.
+//
+// The local backend exists so this runs on a workstation. It is deliberately
+// awkward to select, because it puts holder secrets on this host, which is the
+// thing the design forbids.
+func openStore() (store.Store, bool, error) {
+	if os.Getenv("MAIL_STORE") == "local" {
+		dir := envOr("MAIL_STORE_DIR", "./.mail-store")
 		key, err := localKey()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		log.Printf("DEVELOPMENT credential store at %s: user secrets are on this host, not the user's Drive", dir)
-		return store.OpenLocal(dir, key)
-	default:
-		return nil, errors.New("MAIL_STORE must be 'drive' or 'local'")
+		log.Printf("DEVELOPMENT credential store at %s: holder secrets are on this host, not their Drive", dir)
+		st, err := store.OpenLocal(dir, key)
+		return st, false, err
 	}
+	return nil, true, nil
 }
 
 func localKey() ([]byte, error) {

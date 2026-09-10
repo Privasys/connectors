@@ -109,7 +109,12 @@ func (s *Server) capabilityRoutes(m *http.ServeMux) {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		acct, err := s.store.Get(r.Context(), sub)
+		cs := s.credStore()
+		if cs == nil {
+			writeErr(w, http.StatusServiceUnavailable, errNotConfigured.Error())
+			return
+		}
+		acct, err := cs.Get(r.Context(), sub)
 		if err != nil {
 			// Approving access to a mailbox that was never linked would mint a
 			// capability over nothing and read, on the holder's screen, as
