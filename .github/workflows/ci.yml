@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  mail:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mail
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache-dependency-path: mail/go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -race -count=1
+
+      # The tool catalogue reaches the control plane as an image label. If a
+      # tool is added to the manifest without a route, an agent gets a 404
+      # from something the catalogue promised, so the two are checked against
+      # each other rather than trusted to stay in step.
+      - name: Manifest and routes agree
+        run: |
+          python3 - <<'PY'
+          import json, re, sys
+          manifest = json.load(open('privasys.json'))
+          src = open('internal/api/api.go').read()
+          routed = set(re.findall(r's\.tool\(m, "([^"]+)"', src))
+          declared = {t['endpoint'] for t in manifest['tools']}
+          missing = declared - routed
+          extra = routed - declared
+          if missing:
+              print('in the manifest but not routed:', sorted(missing))
+          if extra:
+              print('routed but not in the manifest:', sorted(extra))
+          sys.exit(1 if (missing or extra) else 0)
+          PY
+
+      - name: Image builds with its manifest
+        run: ./build.sh

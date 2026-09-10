@@ -51,11 +51,16 @@ around it is always ours, because the shell is what holds the credential.
 | Path | What |
 |---|---|
 | `sdk/` | Shared plumbing: capability protocol, sealed-credential store on Drive, attested-caller verification, MCP catalogue helpers. |
-| `mail/` | The Mail Connector. Drivers for generic IMAP, Microsoft Graph and the Gmail API, behind one tool surface. |
+| `mail/` | **Mail Connector**: reads one mailbox for one attested agent under a capability the holder approved, and cannot send. The IMAP driver works; Microsoft Graph and the Gmail API come later, in that order, because that is the order of how much permission each needs from its vendor. See `mail/README.md`. |
+| `mail/cmd/imap-spike/` | The throwaway harness that answered the questions the connector could not be designed without. Kept, because its findings are still the reason the driver looks the way it does. |
 
 ## Status
 
-Early. `mail/cmd/imap-spike` is the first thing here: a throwaway harness that
-answers whether a draft written over IMAP threads correctly in the Gmail
-interface, whether a marker header survives the round trip, and whether labels
-can be set. It is the seed of the IMAP driver, not a product.
+The Mail Connector runs and serves its eleven tools, exercised end to end
+against a real 42,000-message mailbox: list, read, search, sent, labels,
+drafts, and the change feed. Capability grants are minted and enforced, and
+enforcement fails closed.
+
+Not built yet: the Drive-backed credential store, the account-linking page,
+and the drivers for Microsoft Graph and the Gmail API. Deployment to a fleet
+comes after those.

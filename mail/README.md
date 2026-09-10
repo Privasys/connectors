@@ -1,0 +1,129 @@
+# Mail Connector
+
+Reads one mailbox on behalf of one attested agent, under a capability the
+holder approved on their own device. **It cannot send.**
+
+## What it does, and what it deliberately does not
+
+An agent can see what arrived, read a message, follow a conversation, search
+years of mail through the provider's own index, read the holder's own sent
+text to learn how they write, label what it triaged, and leave a reply in the
+Drafts folder for the holder to read and send themselves.
+
+It cannot send a message, delete mail, move anything between folders, or write
+a label outside the `Privasys/` namespace. Those are not settings. There is no
+send method on the driver interface, so "it cannot send" is a property of the
+shape of the code rather than a promise about its behaviour.
+
+## Where things live
+
+**The connector keeps no durable user state.** The one thing that must survive
+a restart is the credential for the linked mailbox, and even that does not
+live here: it is encrypted under a key sealed to this connector's measurement
+and the ciphertext is written to the holder's own Drive. Two independent
+things must hold for anyone else to use it, and revoking the Drive grant
+strands it, which is what makes the holder's own revoke button the kill
+switch rather than a request someone honours.
+
+**Mail is never stored.** The provider stays the system of record; bodies live
+in memory for the length of one call. Searching uses the provider's index,
+which covers years of mail that this service does not hold a byte of.
+
+## Reading a message
+
+What an agent receives is not the raw MIME. The connector reads the first
+non-attachment `text/plain` leaf, falling back to `text/html`, decodes the
+transfer encoding, converts the charset, removes the quoted history and the
+signature, and strips credentials. Attachments are listed, never fetched.
+
+The credential filter is the connector's job rather than the skill's, because
+it must hold when the model has been talked into something. The attack it
+defeats is not persuasion but arithmetic: trigger a password reset somewhere,
+wait for the mail, then ask the agent to read the code out. It removes
+one-time codes, reset and magic links, one-click account-action links, bearer
+tokens, API keys and private keys, replacing rather than deleting so a login
+mail still reads as a login mail.
+
+## Authorisation
+
+Two independent facts must both hold before any tool call touches a mailbox.
+
+The **holder** is asserted by the platform in `X-Privasys-On-Behalf-Of`, on a
+leg the runtime has already authenticated. A call without one is refused, not
+defaulted: an app that could name its own subject could read anyone's mail.
+
+The **calling app** is the identity the runtime verified from the mutual
+RA-TLS client certificate, and there must be a live capability for that app
+and that holder carrying the permission the call needs. Read and write are
+separate checks, because they are separate sentences on the approval screen.
+
+Enforcement fails closed and the switch is explicit, so a zero value cannot
+quietly be permissive.
+
+## Endpoints
+
+| Path | Who calls it |
+|---|---|
+| `POST /tools/*` | the attested agent, eleven tools, see `privasys.json` |
+| `POST /v1/capabilities` | the wallet, as the holder, after approval |
+| `GET /v1/apps` | the holder: what has access |
+| `DELETE /v1/grants/{id}` | the holder: revoke |
+| `GET /health`, `GET /readiness` | the platform |
+
+## Building
+
+```sh
+./build.sh                      # IMAGE and TAG are overridable
+```
+
+Never `docker build` this directory directly. The tool catalogue reaches the
+control plane as an image label, and pasting a second copy of it into the
+Dockerfile is how a catalogue starts advertising tools the service does not
+serve.
+
+## Running it locally
+
+The production credential store is not built yet, so a local run needs two
+deliberate opt-ins, both of which say what they are giving up.
+
+```sh
+export MAIL_STORE=local                   # secrets on THIS host, not the holder's Drive
+export MAIL_STORE_DIR=./.mail-store
+export MAIL_STORE_KEY=$(openssl rand -hex 32)
+export MAIL_ALLOW_UNGRANTED=yes-i-am-developing   # no capability checks
+export PORT=8123
+
+# Link a mailbox. The secret comes from a FILE outside the tree: a password in
+# argv is visible to every process on the machine and lands in shell history.
+./mail-connector -link user-1 -creds /path/to/creds.json
+
+./mail-connector
+```
+
+```json
+{"host":"imap.gmail.com:993","user":"you@example.com","password":"…",
+ "own_domains":["example.com"]}
+```
+
+For Gmail the password must be an App Password, with 2-Step Verification on.
+
+## Known ground
+
+Everything unusual in the IMAP driver was learned against a real
+42,000-message mailbox, and the comments in the source say which rule came
+from what. The three that matter most:
+
+- **Never ask for `BODY[TEXT]`.** It is a section the server assembles from
+  parts it stores separately, and on some shapes the literal it announces does
+  not match the bytes it sends, so the read hangs. A 2 KB message was enough.
+- **Always be able to skip a message.** One in 200 will not come back, twice,
+  even alone. A driver that cannot carry on without one cannot read a real
+  mailbox.
+- **Always `SELECT` before reading by UID**, or an id that exists returns
+  nothing and looks exactly like a deleted message.
+
+## Not built yet
+
+The Drive-backed credential store, the account-linking page, and the
+Microsoft Graph and Gmail API drivers. The store is already a seam, so the
+production backend slots in without touching anything above it.
