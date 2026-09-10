@@ -39,13 +39,22 @@ FROM alpine:3.21
 # Certificates only. Nothing else: no shell utilities to be borrowed, no
 # package manager left armed. A connector holds a mailbox credential, so the
 # image should contain the least that can still serve.
-RUN apk add --no-cache ca-certificates tzdata \
- && addgroup -g 10001 -S app \
- && adduser -u 10001 -S -G app app
+RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=build /out/mail-connector /usr/local/bin/mail-connector
 
-USER 10001:10001
+# No USER directive, deliberately, and it cost a failed deploy to learn why.
+#
+# The platform mounts the app's encrypted volume at /data owned by root, so a
+# container that drops to an unprivileged uid cannot create the one directory
+# it needs and fails at configure time with a permission error that looks
+# nothing like its cause. Enclave app containers run as uid 0 WITHOUT
+# CAP_SYS_ADMIN and with a masked /proc; the enclave, not the uid, is the
+# tenancy boundary here.
+#
+# Revisit if the runtime ever hands the volume over with an owner: dropping
+# privilege inside the container would be worth having, it is simply not
+# something this image can arrange on its own.
 
 # The platform allocates the port and passes it as $PORT. 8080 is reserved and
 # an app that hard-codes a port does not start; EXPOSE here is documentation
