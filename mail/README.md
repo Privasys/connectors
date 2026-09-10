@@ -1,6 +1,4 @@
-| `GET /v1/link` | the holder: which mailbox is connected |
-| `GET /health`, `GET /readiness` | the platform || `GET /` | the holder, in a browser: connect or disconnect a mailbox |
-| `POST /tools/*` | the attested agent, eleven tools, see `privasys.json` |# Mail Connector
+# Mail Connector
 
 Reads one mailbox on behalf of one attested agent, under a capability the
 holder approved on their own device. **It cannot send.**
@@ -66,6 +64,10 @@ quietly be permissive.
 
 | Path | Who calls it |
 |---|---|
+| `GET /` | the holder, in a browser: connect or disconnect a mailbox |
+| `GET /v1/link` | the holder: which mailbox is connected |
+| `POST /v1/link` | the holder: connect one, after it has been proved |
+| `DELETE /v1/link` | the holder: disconnect |
 | `POST /tools/*` | the attested agent, eleven tools, see `privasys.json` |
 | `POST /v1/capabilities` | the wallet, as the holder, after approval |
 | `GET /v1/apps` | the holder: what has access |
