@@ -126,8 +126,31 @@ from what. The three that matter most:
 - **Always `SELECT` before reading by UID**, or an id that exists returns
   nothing and looks exactly like a deleted message.
 
+## Where the credential lives, precisely
+
+Two independent things must hold before anyone can use a linked mailbox. The
+**ciphertext** sits in the holder's own Drive folder, which they can revoke
+this app's access to. The **sealing key** sits on this app's encrypted volume
+and only this measurement can read it. Neither alone is enough, and the holder
+controls the first, which is what makes their revoke a kill switch rather than
+a request someone honours. It also means a redeployed connector leaks nothing:
+the ciphertext it left behind is inert.
+
+The proof presented to Drive is minted per request and never stored. The
+binding key never leaves the runtime; the connector asks the manager to sign
+each proof, so a compromised connector can only act while it is still the app
+the manager thinks it is.
+
+**Operational rule:** the sealing key goes under the upgrade gate. A release
+that rotates it is a re-link event for every holder and must be planned as
+one rather than discovered.
+
 ## Not built yet
 
-The Drive-backed credential store, and the Microsoft Graph and Gmail API
-drivers. The store is already a seam, so the production backend slots in
-without touching anything above it.
+The **attested transport** the Drive store must dial over: mutual RA-TLS with
+the peer's measurement pinned. The store itself is written and tested, and the
+service refuses to start without that transport rather than substituting a
+plain client, because reaching whatever answers the name is exactly the
+guarantee this store exists to make.
+
+Then the Microsoft Graph and Gmail API drivers.

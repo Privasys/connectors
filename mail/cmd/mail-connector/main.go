@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Privasys/connectors/mail/internal/api"
+	"github.com/Privasys/connectors/mail/internal/broker"
 	"github.com/Privasys/connectors/mail/internal/grant"
 	"github.com/Privasys/connectors/mail/internal/store"
 )
@@ -87,10 +89,25 @@ func main() {
 func openStore() (store.Store, error) {
 	switch os.Getenv("MAIL_STORE") {
 	case "drive", "":
+		// The store itself is written and tested; what is missing is the
+		// ATTESTED transport it must dial Drive over, mutual RA-TLS with the
+		// peer's measurement pinned. Refusing here is the honest failure: a
+		// plain HTTP client would reach whatever answers the name, which is
+		// precisely the guarantee this store exists to make, so it must not
+		// be quietly substituted to make a deployment start.
+		//
+		// The broker is constructed first so the message distinguishes "not
+		// on the platform" from "on the platform, transport still to wire".
+		if _, err := broker.New(envOr("MAIL_RESOURCE", "storage")); err != nil {
+			return nil, fmt.Errorf("%w; set MAIL_STORE=local to develop off-platform, "+
+				"understanding that it keeps user secrets on this host", err)
+		}
+		if os.Getenv("MAIL_DRIVE_HOST") == "" {
+			return nil, errors.New("MAIL_DRIVE_HOST is required: the resource service is named, never guessed")
+		}
 		return nil, errors.New(
-			"the Drive-backed credential store is not built yet; " +
-				"set MAIL_STORE=local for development, understanding that it keeps " +
-				"user secrets on this host")
+			"the Drive credential store is implemented but its attested transport is not wired yet; " +
+				"it must dial Drive over mutual RA-TLS with the peer measurement pinned")
 	case "local":
 		dir := os.Getenv("MAIL_STORE_DIR")
 		if dir == "" {
@@ -139,4 +156,11 @@ func requireGrant() bool {
 		return false
 	}
 	return true
+}
+
+func envOr(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
 }

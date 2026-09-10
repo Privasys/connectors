@@ -8,11 +8,26 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "folder": { "type": "string", "description": "Mailbox to list. Defaults to the inbox." },
-          "limit": { "type": "integer", "description": "How many messages, newest first. Default 50, maximum 500." },
-          "unread_only": { "type": "boolean", "description": "Only messages the user has not read." },
-          "since_days": { "type": "integer", "description": "Only messages from the last N days." },
-          "cursor": { "type": "string", "description": "Continue an earlier listing, from its cursor." }
+          "folder": {
+            "type": "string",
+            "description": "Mailbox to list. Defaults to the inbox."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "How many messages, newest first. Default 50, maximum 500."
+          },
+          "unread_only": {
+            "type": "boolean",
+            "description": "Only messages the user has not read."
+          },
+          "since_days": {
+            "type": "integer",
+            "description": "Only messages from the last N days."
+          },
+          "cursor": {
+            "type": "string",
+            "description": "Continue an earlier listing, from its cursor."
+          }
         }
       }
     },
@@ -24,10 +39,18 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string", "description": "Message id from a listing or search." },
-          "max_bytes": { "type": "integer", "description": "Bound on the body read. Default 16384." }
+          "id": {
+            "type": "string",
+            "description": "Message id from a listing or search."
+          },
+          "max_bytes": {
+            "type": "integer",
+            "description": "Bound on the body read. Default 16384."
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       }
     },
     {
@@ -38,10 +61,18 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string", "description": "Any message in the conversation." },
-          "max_bytes": { "type": "integer", "description": "Bound on each body read." }
+          "id": {
+            "type": "string",
+            "description": "Any message in the conversation."
+          },
+          "max_bytes": {
+            "type": "integer",
+            "description": "Bound on each body read."
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       }
     },
     {
@@ -52,12 +83,26 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "query": { "type": "string", "description": "Free text." },
-          "folder": { "type": "string", "description": "Mailbox to search. Defaults to the inbox." },
-          "limit": { "type": "integer", "description": "Maximum hits. Default 50." },
-          "since_days": { "type": "integer", "description": "Only messages from the last N days." }
+          "query": {
+            "type": "string",
+            "description": "Free text."
+          },
+          "folder": {
+            "type": "string",
+            "description": "Mailbox to search. Defaults to the inbox."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum hits. Default 50."
+          },
+          "since_days": {
+            "type": "integer",
+            "description": "Only messages from the last N days."
+          }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       }
     },
     {
@@ -68,8 +113,14 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "limit": { "type": "integer", "description": "How many recent sent messages. Default 200, maximum 2000." },
-          "since_days": { "type": "integer", "description": "Only messages from the last N days." }
+          "limit": {
+            "type": "integer",
+            "description": "How many recent sent messages. Default 200, maximum 2000."
+          },
+          "since_days": {
+            "type": "integer",
+            "description": "Only messages from the last N days."
+          }
         }
       }
     },
@@ -81,11 +132,28 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string", "description": "Message id." },
-          "add": { "type": "array", "items": { "type": "string" }, "description": "Labels to apply, each starting with 'Privasys/'." },
-          "remove": { "type": "array", "items": { "type": "string" }, "description": "Not implemented: removing a label means expunging from a mailbox." }
+          "id": {
+            "type": "string",
+            "description": "Message id."
+          },
+          "add": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Labels to apply, each starting with 'Privasys/'."
+          },
+          "remove": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Not implemented: removing a label means expunging from a mailbox."
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       }
     },
     {
@@ -96,10 +164,17 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
-          "read": { "type": "boolean", "description": "Default true." }
+          "id": {
+            "type": "string"
+          },
+          "read": {
+            "type": "boolean",
+            "description": "Default true."
+          }
         },
-        "required": ["id"]
+        "required": [
+          "id"
+        ]
       }
     },
     {
@@ -110,11 +185,26 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "reply_to": { "type": "string", "description": "Id of the message being replied to." },
-          "body": { "type": "string", "description": "Plain text, in the user's own voice." },
-          "cc": { "type": "array", "items": { "type": "string" }, "description": "Additional recipients." }
+          "reply_to": {
+            "type": "string",
+            "description": "Id of the message being replied to."
+          },
+          "body": {
+            "type": "string",
+            "description": "Plain text, in the user's own voice."
+          },
+          "cc": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional recipients."
+          }
         },
-        "required": ["reply_to", "body"]
+        "required": [
+          "reply_to",
+          "body"
+        ]
       }
     },
     {
@@ -124,8 +214,14 @@
       "endpoint": "/tools/delete_draft",
       "inputSchema": {
         "type": "object",
-        "properties": { "id": { "type": "string" } },
-        "required": ["id"]
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ]
       }
     },
     {
@@ -136,8 +232,14 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "since": { "type": "string", "description": "Cursor from the previous call." },
-          "wait_seconds": { "type": "integer", "description": "How long to wait, up to 60. Zero returns immediately." }
+          "since": {
+            "type": "string",
+            "description": "Cursor from the previous call."
+          },
+          "wait_seconds": {
+            "type": "integer",
+            "description": "How long to wait, up to 60. Zero returns immediately."
+          }
         }
       }
     },
@@ -146,7 +248,21 @@
       "role": "status",
       "description": "Which mailbox is linked for the acting user. Never returns the credential.",
       "endpoint": "/tools/account",
-      "inputSchema": { "type": "object", "properties": {} }
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "resources": [
+    {
+      "kind": "storage.folder",
+      "name": "storage",
+      "label": "Mail Connector",
+      "permissions": [
+        "read",
+        "write"
+      ]
     }
   ],
   "readiness_path": "/readiness",
