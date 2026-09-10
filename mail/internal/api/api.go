@@ -183,6 +183,7 @@ func (s *Server) Routes() *http.ServeMux {
 	s.linkRoutes(m)
 	s.configureRoutes(m)
 	s.extensionsRoute(m)
+	s.mcpRoutes(m)
 
 	return m
 }
@@ -191,8 +192,14 @@ func (s *Server) Routes() *http.ServeMux {
 // returns something JSON-encodable.
 type handler func(ctx context.Context, sub string, drv mail.Driver, body json.RawMessage) (any, error)
 
+// mcpToolPrefix is where an agent's MCP client calls a tool. Every tool is
+// registered at both paths from ONE closure, so the two cannot drift: the
+// acting-user check, the configure gate and the capability check are the same
+// code, not equivalent code.
+const mcpToolPrefix = "/api/v1/mcp/tools/"
+
 func (s *Server) tool(m *http.ServeMux, path string, need grant.Permission, h handler) {
-	m.HandleFunc("POST "+path, func(w http.ResponseWriter, r *http.Request) {
+	call := func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimSpace(r.Header.Get(SubjectHeader))
 		if sub == "" {
 			// Refused, not defaulted. There is no "the user" to fall back to,
@@ -244,7 +251,13 @@ func (s *Server) tool(m *http.ServeMux, path string, need grant.Permission, h ha
 			return
 		}
 		writeJSON(w, http.StatusOK, out)
-	})
+	}
+
+	m.HandleFunc("POST "+path, call)
+	// The same closure, registered again where an agent's MCP client looks.
+	// Derived from the manifest path rather than passed separately, so a tool
+	// cannot end up mounted under one name and callable under another.
+	m.HandleFunc("POST "+mcpToolPrefix+strings.TrimPrefix(path, "/tools/"), call)
 }
 
 // Handler builds the http.Handler for this server.

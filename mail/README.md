@@ -102,10 +102,30 @@ says whose say-so can hand one over.
 | `POST /v1/link` | the holder: connect one, after it has been proved |
 | `DELETE /v1/link` | the holder: disconnect |
 | `POST /tools/*` | the attested agent, eleven tools, see `privasys.json` |
+| `GET /api/v1/mcp/tools` | the agent's MCP client: the catalogue |
+| `POST /api/v1/mcp/tools/*` | the same eleven tools, at the path that client calls |
 | `POST /v1/capabilities` | the wallet, as the holder, after approval |
 | `GET /v1/apps` | the holder: what has access |
 | `DELETE /v1/grants/{id}` | the holder: revoke |
 | `GET /health`, `GET /readiness` | the platform |
+
+The two tool paths are **one closure registered twice**, so the acting-user
+check, the configure gate and the capability check are the same code rather
+than equivalent code. A second copy of those checks is a second place for them
+to be relaxed.
+
+The catalogue is served from the embedded `privasys.json`, which is also the
+label the control plane reads, so the descriptions a model sees are the ones
+that were reviewed and a tool cannot be described two ways. `configure` is
+filtered out of it: it points this deployment at the service holding every
+holder's credential, and an agent that could call it could move them.
+
+**The catalogue is the one request served without an acting user**, because
+the agent's client pulls it on a startup timer before anyone is acting. That
+is safe only because nothing in it varies per holder, which is a property to
+keep. It is also why a connector that does not serve this path is not merely
+degraded: it mounts with no tools at all, and the agent then reports having no
+mail tools, which reads exactly like a connector nobody configured.
 
 ## Building
 
