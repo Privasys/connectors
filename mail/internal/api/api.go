@@ -147,6 +147,7 @@ func (s *Server) Routes() *http.ServeMux {
 	s.tool(m, "/tools/changes", grant.Read, s.changes)
 
 	s.capabilityRoutes(m)
+	s.linkRoutes(m)
 
 	return m
 }

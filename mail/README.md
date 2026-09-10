@@ -1,4 +1,6 @@
-# Mail Connector
+| `GET /v1/link` | the holder: which mailbox is connected |
+| `GET /health`, `GET /readiness` | the platform || `GET /` | the holder, in a browser: connect or disconnect a mailbox |
+| `POST /tools/*` | the attested agent, eleven tools, see `privasys.json` |# Mail Connector
 
 Reads one mailbox on behalf of one attested agent, under a capability the
 holder approved on their own device. **It cannot send.**
@@ -124,6 +126,6 @@ from what. The three that matter most:
 
 ## Not built yet
 
-The Drive-backed credential store, the account-linking page, and the
-Microsoft Graph and Gmail API drivers. The store is already a seam, so the
-production backend slots in without touching anything above it.
+The Drive-backed credential store, and the Microsoft Graph and Gmail API
+drivers. The store is already a seam, so the production backend slots in
+without touching anything above it.
