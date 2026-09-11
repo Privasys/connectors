@@ -232,7 +232,10 @@ func (s *Server) tool(m *http.ServeMux, path string, need grant.Permission, h ha
 		if err != nil {
 			if errors.Is(err, store.ErrNoAccount) {
 				writeErr(w, http.StatusPreconditionFailed,
-					"no mailbox is linked for this user yet")
+					"the user has not linked a mailbox yet, so there is nothing to read. "+
+						"They link it themselves at "+linkPageURL(r)+
+						"; their password is entered there, never in the conversation. "+
+						"Once it is linked, the access they approved applies to it.")
 				return
 			}
 			writeErr(w, http.StatusBadGateway, "the mailbox is not reachable: "+err.Error())

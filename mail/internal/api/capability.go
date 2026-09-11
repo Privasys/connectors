@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -56,11 +57,19 @@ func (s *Server) authorise(r *http.Request, sub string, need grant.Permission) e
 	}
 	g, err := s.grants.Find(r.Context(), sub, app)
 	if err != nil {
+		// Written for the agent that relays them: what is missing, what the
+		// user does about it, and where. Its access to a resource of kind
+		// grant.Kind is the user's to approve, and a mailbox can only be
+		// approved once it is linked, which happens on this service's own page.
 		switch {
 		case errors.Is(err, grant.ErrExpired):
-			return errors.New("the capability for this app has expired; the holder must approve it again")
+			return errors.New("the user's approval for this assistant to use their mailbox has expired. " +
+				"Ask them whether to renew it; if they agree, request access to their " + grant.Kind + " resource again, " +
+				"and they approve it on their device")
 		case errors.Is(err, grant.ErrNoGrant):
-			return errors.New("this app has no capability for this mailbox; the holder must approve one on their device")
+			return errors.New("the user has not approved this assistant's access to their mailbox. " +
+				"Ask them whether they want to connect it. " + linkAdvice(r) +
+				" Then, if they agree, request access to their " + grant.Kind + " resource, and they approve it on their device")
 		}
 		return err
 	}
@@ -70,6 +79,26 @@ func (s *Server) authorise(r *http.Request, sub string, need grant.Permission) e
 	}
 	return nil
 }
+
+// linkAdvice tells the agent where the user links a mailbox: this service's
+// own page, on the host the call arrived at. The password is entered there and
+// sealed in the user's Drive, so it must never be asked for in a conversation.
+// A host that is not a plain DNS name is not repeated into the text.
+func linkAdvice(r *http.Request) string {
+	return "If they have not linked a mailbox yet, they do that first themselves at " + linkPageURL(r) +
+		". Their password is entered there, never in the conversation."
+}
+
+// linkPageURL names this service's linking page for the user.
+func linkPageURL(r *http.Request) string {
+	host := strings.ToLower(strings.TrimSpace(r.Host))
+	if host != "" && dnsName.MatchString(host) {
+		return "https://" + host + "/"
+	}
+	return "this mail connector's own page"
+}
+
+var dnsName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 func permsText(ps []grant.Permission) string {
 	out := make([]string, 0, len(ps))
