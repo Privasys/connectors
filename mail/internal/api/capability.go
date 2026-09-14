@@ -6,6 +6,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -182,9 +183,19 @@ func (s *Server) capabilityRoutes(m *http.ServeMux) {
 		if err != nil {
 			// Approving access to a mailbox that was never linked would mint a
 			// capability over nothing and read, on the holder's screen, as
-			// though it had worked.
-			writeErr(w, http.StatusPreconditionFailed,
-				"this holder has not linked a mailbox yet, so there is nothing to approve")
+			// though it had worked. The reason is logged with the holder the
+			// WALLET named, because a mailbox connected under another subject
+			// (the one the harness asserts on tool calls) looks exactly like no
+			// mailbox from here (2026-09-14 22:19, four refused mints).
+			log.Printf("[capabilities] mint for holder %.8s… by %s: no usable credential: %v", sub, subject, err)
+			msg := "this holder has not connected a mailbox yet, so there is nothing to approve"
+			switch {
+			case errors.Is(err, broker.ErrNotApproved), errors.Is(err, broker.ErrDeclined):
+				msg = "this holder has not given the mail connector its Drive folder, where a connected mailbox would be kept, so there is nothing to approve"
+			case !errors.Is(err, store.ErrNoAccount):
+				msg = "the mail connector could not read this holder's mailbox record: " + err.Error()
+			}
+			writeErr(w, http.StatusPreconditionFailed, msg)
 			return
 		}
 		g, err := s.grantStore().Mint(r.Context(), sub, grant.Grant{
