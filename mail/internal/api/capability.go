@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Privasys/connectors/mail/internal/broker"
 	"github.com/Privasys/connectors/mail/internal/grant"
 	"github.com/Privasys/connectors/mail/internal/store"
 )
@@ -102,7 +103,11 @@ func (s *Server) mailboxLinked(r *http.Request, sub string) bool {
 		return true
 	}
 	_, err := cs.Get(r.Context(), sub)
-	return !errors.Is(err, store.ErrNoAccount)
+	// No credential, or no folder to hold one in yet (the holder has not
+	// approved this service's Drive folder): nothing is linked either way.
+	// 2026-09-14 21:24 the second reading came back as "linked" and the
+	// wallet was asked again for nothing.
+	return !(errors.Is(err, store.ErrNoAccount) || errors.Is(err, broker.ErrNotApproved) || errors.Is(err, broker.ErrDeclined))
 }
 
 // linkAdvice tells the agent where the user links a mailbox: this service's
