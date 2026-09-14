@@ -147,6 +147,61 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 		})
 	})
 
+	// The same link, made from the CONVERSATION (Bertrand, 2026-09-14): the
+	// agent collects the address and the app password with its own question
+	// tool and calls this. The values pass through the model inside the
+	// confidential chain, and the session is the holder's own, in their
+	// Drive; that is the decision, and it stands until MCP elicitation lets
+	// a client collect them without the model. Registered at both tool
+	// paths like every other tool, but WITHOUT the capability check: no
+	// capability can exist before a mailbox does.
+	connect := func(w http.ResponseWriter, r *http.Request) {
+		sub := strings.TrimSpace(r.Header.Get(SubjectHeader))
+		if sub == "" {
+			writeErr(w, http.StatusUnauthorized, "this call carries no acting user; the platform must assert one")
+			return
+		}
+		if s.requireGrant && peerApp(r) == "" {
+			writeErr(w, http.StatusUnauthorized, "this call arrives with no verified calling app; the runtime must vouch for one")
+			return
+		}
+		if !s.configured() {
+			writeErr(w, http.StatusServiceUnavailable, errNotConfigured.Error())
+			return
+		}
+		body, err := readLimited(r, 16<<10)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var req linkRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, "malformed request")
+			return
+		}
+		cs := s.credStore()
+		if cs == nil {
+			writeErr(w, http.StatusServiceUnavailable, errNotConfigured.Error())
+			return
+		}
+		if pending, err := s.ensureFolder(r.Context(), cs, sub); err != nil {
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		} else if pending {
+			writeErr(w, http.StatusAccepted, "the user's device is being asked to approve this service's Drive folder, where the credential is sealed. "+
+				"Ask them to approve it on their device, then call connect_mailbox again with the same values")
+			return
+		}
+		out, status, err := s.linkMailbox(r.Context(), cs, sub, req)
+		if err != nil {
+			writeErr(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+	m.HandleFunc("POST /tools/connect_mailbox", connect)
+	m.HandleFunc("POST "+mcpToolPrefix+"connect_mailbox", connect)
+
 	m.HandleFunc("DELETE /v1/link", func(w http.ResponseWriter, r *http.Request) {
 		sub := s.holder(r)
 		if sub == "" {
@@ -171,6 +226,71 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 			"note":   "the mailbox is disconnected; approvals you gave apps are unchanged and can be revoked separately",
 		})
 	})
+}
+
+// approvalWait bounds how long connect_mailbox waits for the holder to
+// approve this service's Drive folder on their device before answering
+// "pending".
+const approvalWait = 50 * time.Second
+
+// ensureFolder asks for this service's Drive folder when the holder has not
+// approved it yet and waits, briefly, for the answer. True means still
+// pending. A store without the notion (the local backend) needs nothing.
+func (s *Server) ensureFolder(ctx context.Context, cs store.Store, sub string) (bool, error) {
+	a, ok := cs.(store.Approver)
+	if !ok {
+		return false, nil
+	}
+	approved, err := a.Approved(ctx, sub)
+	if err != nil || approved {
+		return false, err
+	}
+	if err := a.AskApproval(ctx, sub, false); err != nil {
+		return false, errors.New("could not ask for the Drive folder this service keeps the credential in: " + err.Error())
+	}
+	deadline := time.Now().Add(approvalWait)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return true, nil
+		case <-time.After(3 * time.Second):
+		}
+		if approved, err := a.Approved(ctx, sub); err == nil && approved {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// linkMailbox proves and stores a credential: the page's POST /v1/link and
+// the conversation's connect_mailbox store the same thing the same way.
+func (s *Server) linkMailbox(ctx context.Context, cs store.Store, sub string, req linkRequest) (map[string]any, int, error) {
+	req.Host = strings.TrimSpace(req.Host)
+	req.User = strings.TrimSpace(req.User)
+	if req.Host == "" {
+		req.Host = "imap.gmail.com:993"
+	}
+	if !strings.Contains(req.Host, ":") {
+		req.Host += ":993"
+	}
+	if req.User == "" || req.Password == "" {
+		return nil, http.StatusBadRequest, errors.New("an address and a password are both needed")
+	}
+	if err := s.proveCredential(ctx, req); err != nil {
+		return nil, http.StatusBadGateway, err
+	}
+	if err := cs.Put(ctx, sub, store.Account{
+		Provider: "imap", Host: req.Host, User: req.User, Secret: req.Password,
+		OwnDomains: cleanDomains(req.OwnDomains), LinkedAt: time.Now(),
+	}); err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+	s.dropConn(sub)
+	return map[string]any{
+		"linked":  true,
+		"account": store.Account{Provider: "imap", Host: req.Host, User: req.User}.Redacted(),
+		"next":    "request access to the user's mail.mailbox resource; they approve this assistant on their device",
+	}, http.StatusOK, nil
 }
 
 // proveCredential opens the mailbox once and closes it.

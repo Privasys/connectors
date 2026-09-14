@@ -70,10 +70,9 @@ func (s *Server) authorise(r *http.Request, sub string, need grant.Permission) e
 		// holder with no mailbox is told to link it FIRST, and only a holder
 		// who has one is told about approvals.
 		if !s.mailboxLinked(r, sub) {
-			return errors.New("the user has not linked a mailbox yet, so there is nothing this assistant could be given access to. " +
-				"They link it themselves at " + linkPageURL(r) + "; their password is entered there, never in the conversation. " +
-				"Do not request access to their " + grant.Kind + " resource before that: the request would fail on their device. " +
-				"Once they say it is linked, ask whether to connect it to this assistant and then request access")
+			return errors.New("the user has not connected a mailbox yet, so there is nothing this assistant could be given access to. " +
+				connectAdvice(r) + " Do not request access to their " + grant.Kind + " resource before the mailbox is connected: " +
+				"the request would fail on their device. Once connect_mailbox has answered linked, request access and they approve it on their device")
 		}
 		switch {
 		case errors.Is(err, grant.ErrExpired):
@@ -110,14 +109,20 @@ func (s *Server) mailboxLinked(r *http.Request, sub string) bool {
 	return !(errors.Is(err, store.ErrNoAccount) || errors.Is(err, broker.ErrNotApproved) || errors.Is(err, broker.ErrDeclined))
 }
 
-// linkAdvice tells the agent where the user links a mailbox: this service's
-// own page, on the host the call arrived at. The password is entered there and
-// sealed in the user's Drive, so it must never be asked for in a conversation.
-// A host that is not a plain DNS name is not repeated into the text.
-func linkAdvice(r *http.Request) string {
-	return "If they have not linked a mailbox yet, they do that first themselves at " + linkPageURL(r) +
-		". Their password is entered there, never in the conversation."
+// connectAdvice tells the agent how a mailbox gets connected: in the
+// conversation, through its own question tool and connect_mailbox (the
+// decision of 2026-09-14: the whole chain runs in confidential computing and
+// the session is the holder's own, in their Drive), or on this service's page
+// for people who prefer it. A host that is not a plain DNS name is not
+// repeated into the text.
+func connectAdvice(r *http.Request) string {
+	return "Ask them, with your question tool, for their email address and an app password " +
+		"(for Gmail: Google account > Security > App passwords; never their sign-in password), then call connect_mailbox with them; " +
+		"the credential is sealed in their own Drive. They can also do it themselves at " + linkPageURL(r) + "."
 }
+
+// linkAdvice is kept for callers that only need the page.
+func linkAdvice(r *http.Request) string { return connectAdvice(r) }
 
 // linkPageURL names this service's linking page for the user.
 func linkPageURL(r *http.Request) string {

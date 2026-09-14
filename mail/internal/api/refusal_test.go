@@ -19,7 +19,7 @@ func TestLinkPageNamesThisServicesOwnHost(t *testing.T) {
 	}
 	advice := linkAdvice(r)
 	if !strings.Contains(advice, "https://mail-connector.apps.test.privasys.org/") ||
-		!strings.Contains(advice, "never in the conversation") {
+		!strings.Contains(advice, "connect_mailbox") {
 		t.Fatalf("advice: %q", advice)
 	}
 }

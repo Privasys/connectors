@@ -404,3 +404,23 @@ func (d *DriveStore) writeSealed(ctx context.Context, sub, path string, plain []
 func (d *DriveStore) AskApproval(ctx context.Context, sub string, retry bool) error {
 	return d.broker.Request(ctx, sub, retry)
 }
+
+// Approved reports whether the holder has granted this service its folder.
+// A decline is an error, so a caller never asks again on its own.
+func (d *DriveStore) Approved(ctx context.Context, sub string) (bool, error) {
+	st, err := d.broker.Status(ctx, sub)
+	if err != nil {
+		return false, err
+	}
+	if st.Declined {
+		return false, broker.ErrDeclined
+	}
+	return st.Approved, nil
+}
+
+// Approver is what a store that keeps credentials in a holder-granted place
+// can say about the grant. The local backend has no such notion.
+type Approver interface {
+	Approved(ctx context.Context, sub string) (bool, error)
+	AskApproval(ctx context.Context, sub string, retry bool) error
+}

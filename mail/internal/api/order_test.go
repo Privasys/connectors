@@ -26,11 +26,14 @@ func TestUnlinkedHolderIsSentToLinkNotToApprove(t *testing.T) {
 		t.Fatal("an unlinked, unapproved holder must be refused")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "https://mail-connector.apps.test.privasys.org/") || !strings.Contains(msg, "not linked") {
-		t.Fatalf("the refusal must send them to the link page: %q", msg)
+	if !strings.Contains(msg, "not connected") || !strings.Contains(msg, "connect_mailbox") || !strings.Contains(msg, "question tool") {
+		t.Fatalf("the refusal must have the agent collect the details in the conversation and call connect_mailbox: %q", msg)
 	}
 	if !strings.Contains(msg, "Do not request access") {
 		t.Fatalf("the refusal must stop the agent asking the wallet first: %q", msg)
+	}
+	if !strings.Contains(msg, "https://mail-connector.apps.test.privasys.org/") {
+		t.Fatalf("the page stays named for people who prefer it: %q", msg)
 	}
 }
 

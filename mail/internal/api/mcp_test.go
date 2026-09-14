@@ -110,7 +110,13 @@ func TestEveryAdvertisedToolIsCallableAndEnforced(t *testing.T) {
 			t.Errorf("%s served a call with no acting user: %d", name, w.Code)
 		}
 
-		// And an app with no capability is refused here too.
+		// And an app with no capability is refused here too. The one
+		// exception is the setup role: connecting the mailbox is what makes a
+		// capability possible, so it cannot be behind one; it still needs an
+		// acting user (checked above) and a verified calling app.
+		if name == "connect_mailbox" {
+			continue
+		}
 		r = httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
 		r.Header.Set(SubjectHeader, "user-1")
 		r.Header.Set(PeerAppHeader, "0123456789abcdef0123456789abcdef")
