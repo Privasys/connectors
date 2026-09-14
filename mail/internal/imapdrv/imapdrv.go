@@ -459,6 +459,9 @@ func (d *Driver) List(ctx context.Context, o mail.ListOptions) (mail.Page, error
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
+	if !o.Since.IsZero() {
+		return d.listSince(folder, sd, o, limit)
+	}
 
 	// Newest first, and always from a bounded recent window: the mailboxes
 	// this runs against hold tens of thousands of messages, so there is no
@@ -813,10 +816,140 @@ func (d *Driver) DeleteDraft(ctx context.Context, id string) error {
 	return nil
 }
 
+// listSince serves a window bounded by date rather than by count: the server
+// searches (SINCE is date-granular, so the exact instant is still applied
+// here), and the page walks the matching UIDs newest first. Before this the
+// date was applied AFTER a count-bounded fetch, so "the last two days" on a
+// busy day returned fewer than the limit and reached no further back.
+func (d *Driver) listSince(folder string, sd *imap.SelectData, o mail.ListOptions, limit int) (mail.Page, error) {
+	crit := &imap.SearchCriteria{Since: o.Since}
+	if o.UnreadOnly {
+		crit.NotFlag = []imap.Flag{imap.FlagSeen}
+	}
+	res, err := d.cl.UIDSearch(crit, nil).Wait()
+	if err != nil {
+		return mail.Page{}, fmt.Errorf("search since %s: %w", o.Since.Format("2006-01-02"), err)
+	}
+	below := imap.UID(0)
+	if c, ok := parseUIDCursor(o.Cursor, sd.UIDValidity); ok {
+		below = c
+	}
+	uids, lowest, more := pageOfUIDs(res.AllUIDs(), below, limit)
+	var page mail.Page
+	if len(uids) == 0 {
+		return page, nil
+	}
+	msgs, bad := d.fetchMetaUIDs(uids)
+	for _, u := range bad {
+		page.Unreadable = append(page.Unreadable, encodeID(msgID{Folder: folder, UIDValidity: sd.UIDValidity, UID: u}))
+	}
+	for _, m := range msgs {
+		h := d.header(folder, sd.UIDValidity, m)
+		if o.UnreadOnly && !h.Unread {
+			continue
+		}
+		if h.Date.Before(o.Since) {
+			continue
+		}
+		page.Headers = append(page.Headers, h)
+	}
+	sort.Slice(page.Headers, func(i, j int) bool {
+		return page.Headers[i].Date.After(page.Headers[j].Date)
+	})
+	if more {
+		page.Cursor = uidCursor(sd.UIDValidity, lowest)
+	}
+	return page, nil
+}
+
+// pageOfUIDs takes the newest `limit` UIDs strictly below `below` (0 = no
+// bound) from a search result, and reports the lowest one delivered and
+// whether older ones remain.
+func pageOfUIDs(all []imap.UID, below imap.UID, limit int) (page []imap.UID, lowest imap.UID, more bool) {
+	sort.Slice(all, func(i, j int) bool { return all[i] > all[j] })
+	for _, u := range all {
+		if below != 0 && u >= below {
+			continue
+		}
+		if len(page) == limit {
+			more = true
+			break
+		}
+		page = append(page, u)
+		lowest = u
+	}
+	return page, lowest, more
+}
+
+// A UID cursor names a position in one incarnation of the mailbox. The
+// validity is part of it so a cursor from before the mailbox was recreated
+// is recognised as stale instead of read as a position in the new one.
+const uidCursorPrefix = "uid:"
+
+func uidCursor(validity uint32, uid imap.UID) string {
+	return fmt.Sprintf("%s%d:%d", uidCursorPrefix, validity, uint32(uid))
+}
+
+// parseUIDCursor returns the UID a cursor names when it belongs to this
+// incarnation of the mailbox. Any other cursor, including the message-count
+// cursors of earlier releases, is ignored: a count read as a UID would skip
+// or repeat messages silently.
+func parseUIDCursor(cursor string, validity uint32) (imap.UID, bool) {
+	rest, ok := strings.CutPrefix(cursor, uidCursorPrefix)
+	if !ok {
+		return 0, false
+	}
+	v, u, ok := strings.Cut(rest, ":")
+	if !ok {
+		return 0, false
+	}
+	pv, err := strconv.ParseUint(v, 10, 32)
+	if err != nil || uint32(pv) != validity {
+		return 0, false
+	}
+	pu, err := strconv.ParseUint(u, 10, 32)
+	if err != nil || pu == 0 {
+		return 0, false
+	}
+	return imap.UID(pu), true
+}
+
+// fetchMetaUIDs is fetchMeta by UID, for messages a search named.
+func (d *Driver) fetchMetaUIDs(uids []imap.UID) ([]*imapclient.FetchMessageBuffer, []imap.UID) {
+	set := imap.UIDSetNum(uids...)
+	msgs, err := d.cl.Fetch(set, metaOptions()).Collect()
+	if err == nil {
+		return msgs, nil
+	}
+	if rerr := d.reconnect(); rerr != nil {
+		return nil, uids
+	}
+	if _, err := d.selectBox(d.sel, true); err != nil {
+		return nil, uids
+	}
+	var out []*imapclient.FetchMessageBuffer
+	var bad []imap.UID
+	for _, u := range uids {
+		m, err := d.cl.Fetch(imap.UIDSetNum(u), metaOptions()).Collect()
+		if err != nil {
+			bad = append(bad, u)
+			continue
+		}
+		out = append(out, m...)
+	}
+	return out, bad
+}
+
 // Changes waits on the mailbox's own event source.
 //
 // IDLE is what makes the whole product affordable: a quiet mailbox costs an
 // open connection and nothing else, no polling, no model calls, no credits.
+//
+// The cursor is the mailbox's next UID, qualified by its validity. The first
+// release used the message COUNT, which an expunge shifts: after one deletion
+// the count named a different message and the feed skipped or repeated
+// arrivals silently. A UID is assigned once and never reused within one
+// validity, so "everything at or above the cursor" is exactly what arrived.
 func (d *Driver) Changes(ctx context.Context, since string, wait time.Duration) ([]mail.Change, string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -826,18 +959,20 @@ func (d *Driver) Changes(ctx context.Context, since string, wait time.Duration) 
 	if err != nil {
 		return nil, since, err
 	}
-	last := sd.NumMessages
-	if since != "" {
-		if v, err := strconv.ParseUint(since, 10, 32); err == nil {
-			last = uint32(v)
-		}
+	// No usable cursor (first call, another incarnation of the mailbox, or
+	// a count cursor from an earlier release) means "from now": nothing is
+	// reported as having arrived, and the cursor handed back is a real one.
+	from, ok := parseUIDCursor(since, sd.UIDValidity)
+	if !ok {
+		from = sd.UIDNext
 	}
 	// Anything that arrived while we were away, before waiting for more.
-	if sd.NumMessages > last {
-		return d.arrivals(last, sd), strconv.FormatUint(uint64(sd.NumMessages), 10), nil
+	if sd.UIDNext > from {
+		changes, next := d.arrivalsFrom(from, sd)
+		return changes, uidCursor(sd.UIDValidity, next), nil
 	}
 	if wait <= 0 {
-		return nil, strconv.FormatUint(uint64(sd.NumMessages), 10), nil
+		return nil, uidCursor(sd.UIDValidity, from), nil
 	}
 
 	arrived := make(chan uint32, 1)
@@ -853,24 +988,54 @@ func (d *Driver) Changes(ctx context.Context, since string, wait time.Duration) 
 	if err != nil {
 		return nil, since, fmt.Errorf("idle: %w", err)
 	}
-	var now uint32
+	woke := false
 	select {
-	case n := <-arrived:
-		now = n
+	case <-arrived:
+		woke = true
 	case <-time.After(wait):
 	case <-ctx.Done():
 	}
 	_ = idle.Close()
 	_ = idle.Wait()
 
-	if now <= last {
-		return nil, strconv.FormatUint(uint64(last), 10), nil
+	if !woke {
+		return nil, uidCursor(sd.UIDValidity, from), nil
 	}
 	sd2, err := d.selectBox(d.folders.inbox, true)
 	if err != nil {
 		return nil, since, err
 	}
-	return d.arrivals(last, sd2), strconv.FormatUint(uint64(sd2.NumMessages), 10), nil
+	if sd2.UIDValidity != sd.UIDValidity {
+		// The mailbox was recreated under us: start over from its now.
+		return nil, uidCursor(sd2.UIDValidity, sd2.UIDNext), nil
+	}
+	changes, next := d.arrivalsFrom(from, sd2)
+	return changes, uidCursor(sd2.UIDValidity, next), nil
+}
+
+// arrivalsFrom reports every message whose UID is at or above `from`, and the
+// cursor to continue from: one past the highest UID seen, or the server's
+// next UID when nothing was found (the server may have advanced it for a
+// message that was expunged again before we looked).
+func (d *Driver) arrivalsFrom(from imap.UID, sd *imap.SelectData) ([]mail.Change, imap.UID) {
+	crit := &imap.SearchCriteria{UID: []imap.UIDSet{{imap.UIDRange{Start: from, Stop: 0}}}}
+	res, err := d.cl.UIDSearch(crit, nil).Wait()
+	if err != nil {
+		return nil, from
+	}
+	uids := res.AllUIDs()
+	if len(uids) == 0 {
+		return nil, sd.UIDNext
+	}
+	sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
+	var out []mail.Change
+	for _, u := range uids {
+		out = append(out, mail.Change{
+			ID:   encodeID(msgID{Folder: d.folders.inbox, UIDValidity: sd.UIDValidity, UID: u}),
+			Kind: "arrived",
+		})
+	}
+	return out, uids[len(uids)-1] + 1
 }
 
 func (d *Driver) connectWithHandler(arrived chan<- uint32) error {
@@ -901,26 +1066,4 @@ func (d *Driver) connectWithHandler(arrived chan<- uint32) error {
 	d.cl = cl
 	d.sel = ""
 	return nil
-}
-
-func (d *Driver) arrivals(from uint32, sd *imap.SelectData) []mail.Change {
-	var out []mail.Change
-	lo := from + 1
-	if lo < 1 {
-		lo = 1
-	}
-	for start := lo; start <= sd.NumMessages; start += fetchBatch {
-		end := start + fetchBatch - 1
-		if end > sd.NumMessages {
-			end = sd.NumMessages
-		}
-		msgs, _ := d.fetchMeta(start, end)
-		for _, m := range msgs {
-			out = append(out, mail.Change{
-				ID:   encodeID(msgID{Folder: d.folders.inbox, UIDValidity: sd.UIDValidity, UID: m.UID}),
-				Kind: "arrived",
-			})
-		}
-	}
-	return out
 }
