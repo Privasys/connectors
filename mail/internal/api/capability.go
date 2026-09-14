@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Privasys/connectors/mail/internal/grant"
+	"github.com/Privasys/connectors/mail/internal/store"
 )
 
 // PeerAppHeader carries the app id the RUNTIME verified from the mutual RA-TLS
@@ -61,15 +62,27 @@ func (s *Server) authorise(r *http.Request, sub string, need grant.Permission) e
 		// user does about it, and where. Its access to a resource of kind
 		// grant.Kind is the user's to approve, and a mailbox can only be
 		// approved once it is linked, which happens on this service's own page.
+		//
+		// ORDER MATTERS. On 2026-09-14 the refusal below sent an agent to
+		// request access before the holder had linked anything; the wallet
+		// then showed "nothing to approve" (412) on the holder's phone. So a
+		// holder with no mailbox is told to link it FIRST, and only a holder
+		// who has one is told about approvals.
+		if !s.mailboxLinked(r, sub) {
+			return errors.New("the user has not linked a mailbox yet, so there is nothing this assistant could be given access to. " +
+				"They link it themselves at " + linkPageURL(r) + "; their password is entered there, never in the conversation. " +
+				"Do not request access to their " + grant.Kind + " resource before that: the request would fail on their device. " +
+				"Once they say it is linked, ask whether to connect it to this assistant and then request access")
+		}
 		switch {
 		case errors.Is(err, grant.ErrExpired):
 			return errors.New("the user's approval for this assistant to use their mailbox has expired. " +
 				"Ask them whether to renew it; if they agree, request access to their " + grant.Kind + " resource again, " +
 				"and they approve it on their device")
-		case errors.Is(err, grant.ErrNoGrant):
+		case errors.Is(err, grant.ErrNoGrant), errors.Is(err, store.ErrNoFolder):
 			return errors.New("the user has not approved this assistant's access to their mailbox. " +
-				"Ask them whether they want to connect it. " + linkAdvice(r) +
-				" Then, if they agree, request access to their " + grant.Kind + " resource, and they approve it on their device")
+				"Ask them whether they want to connect it; if they agree, request access to their " + grant.Kind +
+				" resource, and they approve it on their device")
 		}
 		return err
 	}
@@ -78,6 +91,18 @@ func (s *Server) authorise(r *http.Request, sub string, need grant.Permission) e
 			" for this app, which does not cover this")
 	}
 	return nil
+}
+
+// mailboxLinked reports whether the holder has a credential stored. Unknown
+// (no store yet, or Drive unreachable) counts as linked, so the refusal that
+// follows talks about approval rather than sending someone to link again.
+func (s *Server) mailboxLinked(r *http.Request, sub string) bool {
+	cs := s.credStore()
+	if cs == nil {
+		return true
+	}
+	_, err := cs.Get(r.Context(), sub)
+	return !errors.Is(err, store.ErrNoAccount)
 }
 
 // linkAdvice tells the agent where the user links a mailbox: this service's

@@ -164,6 +164,9 @@ func (g *DriveGrants) Find(ctx context.Context, userSub, subject string) (grant.
 
 func (g *DriveGrants) List(ctx context.Context, userSub string) ([]grant.Grant, error) {
 	list, err := g.load(ctx, userSub)
+	if errors.Is(err, ErrNoFolder) {
+		return nil, nil // no folder, no grants: an empty list, not a failure
+	}
 	if err != nil {
 		return nil, err
 	}
