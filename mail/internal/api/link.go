@@ -4,6 +4,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -175,8 +176,33 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 			return
 		}
 		var req linkRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			writeErr(w, http.StatusBadRequest, "malformed request")
+		if len(bytes.TrimSpace(body)) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				writeErr(w, http.StatusBadRequest, "malformed request")
+				return
+			}
+		}
+		// Called without the values: ask the HOLDER, not the model. This is
+		// MCP elicitation: the harness's shim turns this answer into a
+		// question on the holder's own screen and calls again with what
+		// they typed, which the model never sees (elicit.go in the harness).
+		if strings.TrimSpace(req.User) == "" || req.Password == "" {
+			writeJSON(w, http.StatusPreconditionRequired, map[string]any{
+				"elicit": map[string]any{
+					"message": "Connect your mailbox. The mail connector asks you directly: what you enter here goes " +
+						"to its enclave and is sealed in your own Drive; it is not part of this conversation.",
+					"requestedSchema": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"user": map[string]any{"type": "string", "title": "Email address", "format": "email"},
+							"password": map[string]any{"type": "string", "title": "App password", "format": "password",
+								"description": "For Gmail: Google account > Security > App passwords. Never your sign-in password."},
+							"host": map[string]any{"type": "string", "title": "IMAP server", "default": "imap.gmail.com:993"},
+						},
+						"required": []string{"user", "password"},
+					},
+				},
+			})
 			return
 		}
 		cs := s.credStore()

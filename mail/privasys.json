@@ -306,7 +306,7 @@
     {
       "name": "connect_mailbox",
       "role": "setup",
-      "description": "Connect the acting user's mailbox to this service, in the conversation: ask the user for their email address and an app password with your question tool (for Gmail: Google account > Security > App passwords, never their sign-in password), then call this with them. The credential is proved against the mailbox and sealed in the user's own Drive; if this service has no folder there yet, the user's device is asked to approve one first and this call waits for it. The whole exchange runs inside confidential computing and the session stays in the user's Drive. Never echoes the password. Afterwards, request access to the user's mail.mailbox resource so they can approve this assistant on their device.",
+      "description": "Connect the acting user's mailbox to this service. Call it WITHOUT arguments: the service asks the user directly, on their own screen, for their address and an app password, and what they enter never enters this conversation. Never ask the user for a password yourself. The credential is proved against the mailbox and sealed in the user's own Drive; if this service has no folder there yet, the user's device is asked to approve one first and this call waits for it. The call may take a few minutes while the user answers. Afterwards, request access to the user's mail.mailbox resource so they can approve this assistant on their device.",
       "endpoint": "/tools/connect_mailbox",
       "inputSchema": {
         "type": "object",

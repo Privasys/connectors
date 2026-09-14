@@ -26,8 +26,8 @@ func TestUnlinkedHolderIsSentToLinkNotToApprove(t *testing.T) {
 		t.Fatal("an unlinked, unapproved holder must be refused")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "not connected") || !strings.Contains(msg, "connect_mailbox") || !strings.Contains(msg, "question tool") {
-		t.Fatalf("the refusal must have the agent collect the details in the conversation and call connect_mailbox: %q", msg)
+	if !strings.Contains(msg, "not connected") || !strings.Contains(msg, "connect_mailbox with no arguments") || !strings.Contains(msg, "never enters this conversation") {
+		t.Fatalf("the refusal must have the agent call connect_mailbox empty-handed and keep the password out of the chat: %q", msg)
 	}
 	if !strings.Contains(msg, "Do not request access") {
 		t.Fatalf("the refusal must stop the agent asking the wallet first: %q", msg)

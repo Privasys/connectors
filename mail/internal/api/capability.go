@@ -117,8 +117,8 @@ func (s *Server) mailboxLinked(r *http.Request, sub string) bool {
 // for people who prefer it. A host that is not a plain DNS name is not
 // repeated into the text.
 func connectAdvice(r *http.Request) string {
-	return "Ask them, with your question tool, for their email address and an app password " +
-		"(for Gmail: Google account > Security > App passwords; never their sign-in password), then call connect_mailbox with them; " +
+	return "Call connect_mailbox with no arguments: the service asks them directly on their own screen for their address and an app password, " +
+		"and what they enter never enters this conversation, so never ask them for a password yourself; " +
 		"the credential is sealed in their own Drive. They can also do it themselves at " + linkPageURL(r) + "."
 }
 
