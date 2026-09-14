@@ -292,8 +292,12 @@ func (m *Memory) Revoke(_ context.Context, userSub, id string) error {
 	return nil
 }
 
-func newID() string {
+// NewID mints a grant id. Shared with the other stores so an id looks the
+// same wherever the grant is kept.
+func NewID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
+
+func newID() string { return NewID() }

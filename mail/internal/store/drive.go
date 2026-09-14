@@ -339,6 +339,66 @@ func (d *DriveStore) Delete(ctx context.Context, sub string) error {
 
 func (d *DriveStore) Close() error { return nil }
 
+// readSealed reads one sealed file from the holder's folder. Not found is
+// reported, not an error; a folder the holder has not granted is ErrNoFolder.
+func (d *DriveStore) readSealed(ctx context.Context, sub, path string) ([]byte, bool, error) {
+	st, err := d.coords(ctx, sub)
+	if errors.Is(err, broker.ErrNotApproved) || errors.Is(err, broker.ErrDeclined) {
+		return nil, false, ErrNoFolder
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	res, err := d.request(ctx, st, http.MethodGet, path, nil, []string{"read"})
+	if err != nil {
+		return nil, false, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		return nil, false, nil
+	}
+	if res.StatusCode/100 != 2 {
+		return nil, false, fmt.Errorf("drive answered %d reading %s", res.StatusCode, path)
+	}
+	sealed, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(sealed) == 0 {
+		return nil, false, nil
+	}
+	plain, err := decrypt(d.key, sealed)
+	if err != nil {
+		return nil, false, fmt.Errorf("%s will not decrypt with this app's sealing key; "+
+			"if this app was upgraded, the holder must approve it again", path)
+	}
+	return plain, true, nil
+}
+
+// writeSealed seals and writes one file into the holder's folder.
+func (d *DriveStore) writeSealed(ctx context.Context, sub, path string, plain []byte) error {
+	st, err := d.coords(ctx, sub)
+	if errors.Is(err, broker.ErrNotApproved) || errors.Is(err, broker.ErrDeclined) {
+		return ErrNoFolder
+	}
+	if err != nil {
+		return err
+	}
+	sealed, err := encrypt(d.key, plain)
+	if err != nil {
+		return err
+	}
+	res, err := d.request(ctx, st, http.MethodPut, path, bytes.NewReader(sealed), []string{"read", "write"})
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode/100 != 2 {
+		return fmt.Errorf("drive answered %d writing %s", res.StatusCode, path)
+	}
+	return nil
+}
+
 // AskApproval triggers the wallet push for a holder who has not approved yet.
 // A user gesture, never automatic.
 func (d *DriveStore) AskApproval(ctx context.Context, sub string, retry bool) error {

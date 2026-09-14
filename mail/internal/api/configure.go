@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/Privasys/connectors/mail/internal/config"
+	"github.com/Privasys/connectors/mail/internal/grant"
 	"github.com/Privasys/connectors/mail/internal/holder"
 	"github.com/Privasys/connectors/mail/internal/store"
 )
@@ -86,6 +87,9 @@ func (s *Server) configureRoutes(m *http.ServeMux) {
 		s.mu.Lock()
 		old := s.store
 		s.store = st
+		// The capabilities live beside the credentials, so a new store is a
+		// new place to find them.
+		s.grants = GrantsFor(st, s.grants)
 		// The issuer that decides who a HOLDER is arrives with the same
 		// configuration as the peer that stores their credential, and must be
 		// swapped in the same breath: a window where the new issuer is stored
@@ -164,11 +168,35 @@ func (errNoStore) Error() string {
 }
 
 // SetStore installs the credential store after construction, for the
-// configure path where it does not exist yet at startup.
+// configure path where it does not exist yet at startup. The capability
+// store follows it: a Drive-backed credential store keeps the holder's
+// capabilities in the same folder.
 func (s *Server) SetStore(st store.Store) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.store = st
+	s.grants = GrantsFor(st, s.grants)
+}
+
+// GrantsFor picks where capabilities are kept for a credential store: in the
+// holder's Drive when the credentials are, otherwise whatever was in use (the
+// in-process store for development, which loses them on restart).
+func GrantsFor(st store.Store, fallback grant.Store) grant.Store {
+	if ds, ok := st.(*store.DriveStore); ok {
+		return store.NewDriveGrants(ds)
+	}
+	if fallback == nil {
+		return grant.NewMemory()
+	}
+	return fallback
+}
+
+// grantStore reads the capability store under the lock, for the same reason
+// as credStore: configure can swap it.
+func (s *Server) grantStore() grant.Store {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.grants
 }
 
 // Close releases the store and every cached mailbox connection.

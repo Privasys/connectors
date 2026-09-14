@@ -55,7 +55,7 @@ func (s *Server) authorise(r *http.Request, sub string, need grant.Permission) e
 	if app == "" {
 		return errors.New("this call arrives with no verified calling app; the runtime must vouch for one")
 	}
-	g, err := s.grants.Find(r.Context(), sub, app)
+	g, err := s.grantStore().Find(r.Context(), sub, app)
 	if err != nil {
 		// Written for the agent that relays them: what is missing, what the
 		// user does about it, and where. Its access to a resource of kind
@@ -152,7 +152,7 @@ func (s *Server) capabilityRoutes(m *http.ServeMux) {
 				"this holder has not linked a mailbox yet, so there is nothing to approve")
 			return
 		}
-		g, err := s.grants.Mint(r.Context(), sub, grant.Grant{
+		g, err := s.grantStore().Mint(r.Context(), sub, grant.Grant{
 			Subject:     subject,
 			Permissions: perms,
 			ExpiresAt:   time.Unix(req.ExpiresUnix, 0),
@@ -185,7 +185,7 @@ func (s *Server) capabilityRoutes(m *http.ServeMux) {
 			writeErr(w, http.StatusUnauthorized, "this call is not authenticated as a holder")
 			return
 		}
-		list, err := s.grants.List(r.Context(), sub)
+		list, err := s.grantStore().List(r.Context(), sub)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -202,7 +202,7 @@ func (s *Server) capabilityRoutes(m *http.ServeMux) {
 			writeErr(w, http.StatusUnauthorized, "this call is not authenticated as a holder")
 			return
 		}
-		if err := s.grants.Revoke(r.Context(), sub, r.PathValue("id")); err != nil {
+		if err := s.grantStore().Revoke(r.Context(), sub, r.PathValue("id")); err != nil {
 			if errors.Is(err, grant.ErrNoGrant) {
 				writeErr(w, http.StatusNotFound, "no such capability for this holder")
 				return

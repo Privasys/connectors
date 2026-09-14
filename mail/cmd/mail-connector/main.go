@@ -24,7 +24,6 @@ import (
 	"github.com/Privasys/connectors/mail/internal/attested"
 	"github.com/Privasys/connectors/mail/internal/broker"
 	"github.com/Privasys/connectors/mail/internal/config"
-	"github.com/Privasys/connectors/mail/internal/grant"
 	"github.com/Privasys/connectors/mail/internal/holder"
 	"github.com/Privasys/connectors/mail/internal/store"
 )
@@ -49,7 +48,9 @@ func main() {
 		log.Fatalf("credential store: %v", err)
 	}
 
-	srv := api.New(st, grant.NewMemory(), requireGrant())
+	// Capabilities live beside the credentials: in the holder's Drive when
+	// the credential store is Drive-backed, in memory for the local store.
+	srv := api.New(st, api.GrantsFor(st, nil), requireGrant())
 
 	// Who this deployment will accept as a HOLDER. The platform's own issuer
 	// unless configure replaces it, which it does on the same lock as the
