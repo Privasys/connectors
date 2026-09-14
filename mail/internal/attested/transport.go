@@ -114,8 +114,15 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			MaxIdleConnsPerHost: 2,
 			IdleConnTimeout:     90 * time.Second,
 		}
+		// Retire verified connections inside the peer's verdict window
+		// (verdict.go). The transport lives as long as the process.
+		go func() {
+			for range time.Tick(verdictWindow / 2) {
+				t.pool.CloseIdleConnections()
+			}
+		}()
 	})
-	return t.pool.RoundTrip(req)
+	return roundTripStaleVerdict(t.pool, t.pool.CloseIdleConnections, req)
 }
 
 // CloseIdleConnections drops pooled channels, so a re-verification happens on
