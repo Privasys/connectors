@@ -148,14 +148,17 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 		})
 	})
 
-	// The same link, made from the CONVERSATION (Bertrand, 2026-09-14): the
-	// agent collects the address and the app password with its own question
-	// tool and calls this. The values pass through the model inside the
-	// confidential chain, and the session is the holder's own, in their
-	// Drive; that is the decision, and it stands until MCP elicitation lets
-	// a client collect them without the model. Registered at both tool
-	// paths like every other tool, but WITHOUT the capability check: no
-	// capability can exist before a mailbox does.
+	// The same link, made from the CONVERSATION, without the model ever
+	// holding the values (Bertrand, 2026-09-14/15). The tool takes no
+	// arguments: a call answers 428 with a schema, the harness shows it on
+	// the holder's own screen (MCP elicitation) and calls again with what
+	// they typed, marked with ElicitationHeader. Values that arrive WITHOUT
+	// that mark were collected by a model, whatever the skill said (seen
+	// 2026-09-15: the model asked for the app password with its question
+	// tool and passed it here, so it sat in the session record); they are
+	// dropped unread and the question is asked properly. Registered at both
+	// tool paths like every other tool, but WITHOUT the capability check:
+	// no capability can exist before a mailbox does.
 	connect := func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimSpace(r.Header.Get(SubjectHeader))
 		if sub == "" {
@@ -176,17 +179,18 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 			return
 		}
 		var req linkRequest
-		if len(bytes.TrimSpace(body)) > 0 {
+		elicited := strings.TrimSpace(r.Header.Get(ElicitationHeader)) != ""
+		if elicited && len(bytes.TrimSpace(body)) > 0 {
 			if err := json.Unmarshal(body, &req); err != nil {
 				writeErr(w, http.StatusBadRequest, "malformed request")
 				return
 			}
 		}
-		// Called without the values: ask the HOLDER, not the model. This is
-		// MCP elicitation: the harness's shim turns this answer into a
-		// question on the holder's own screen and calls again with what
+		// Not the holder's own answers yet: ask the HOLDER, not the model.
+		// This is MCP elicitation: the harness's shim turns this answer into
+		// a question on the holder's own screen and calls again with what
 		// they typed, which the model never sees (elicit.go in the harness).
-		if strings.TrimSpace(req.User) == "" || req.Password == "" {
+		if !elicited || strings.TrimSpace(req.User) == "" || req.Password == "" {
 			writeJSON(w, http.StatusPreconditionRequired, map[string]any{
 				"elicit": map[string]any{
 					"message": "Connect your mailbox. The mail connector asks you directly: what you enter here goes " +

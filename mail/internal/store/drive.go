@@ -233,13 +233,20 @@ func (d *DriveStore) forgetBindingKey() {
 	d.mu.Unlock()
 }
 
+// request addresses one file BY PATH under the holder's folder. A PUT here
+// upserts the content (Drive D2); a GET is a STAT and answers the node view,
+// never the bytes: content is read by node id, see readFile.
 func (d *DriveStore) request(ctx context.Context, st broker.Status, method, path string, body io.Reader, scope []string) (*http.Response, error) {
+	url := fmt.Sprintf("https://%s/v1/tenants/%s/path?root=%s&path=%s",
+		d.driveHost, st.TenantID(), st.NodeID(), path)
+	return d.do(ctx, st, method, url, body, scope)
+}
+
+func (d *DriveStore) do(ctx context.Context, st broker.Status, method, url string, body io.Reader, scope []string) (*http.Response, error) {
 	tok, err := d.token(ctx, st, scope)
 	if err != nil {
 		return nil, err
 	}
-	url := fmt.Sprintf("https://%s/v1/tenants/%s/path?root=%s&path=%s",
-		d.driveHost, st.TenantID(), st.NodeID(), path)
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
@@ -252,25 +259,64 @@ func (d *DriveStore) request(ctx context.Context, st broker.Status, method, path
 	return d.http.Do(req)
 }
 
+// readFile returns the bytes of one file in the holder's folder, or found
+// false when there is no such file. Two round trips: the path route resolves
+// the node (it is a stat, and until 2026-09-15 this store decrypted its JSON
+// answer as if it were the ciphertext, so every read after a successful write
+// failed as "will not decrypt"), then the download route by node id.
+func (d *DriveStore) readFile(ctx context.Context, st broker.Status, path string) ([]byte, bool, error) {
+	res, err := d.request(ctx, st, http.MethodGet, path, nil, []string{"read"})
+	if err != nil {
+		return nil, false, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound {
+		return nil, false, nil
+	}
+	if res.StatusCode/100 != 2 {
+		return nil, false, fmt.Errorf("drive answered %d resolving %s", res.StatusCode, path)
+	}
+	var node struct {
+		ID   string `json:"id"`
+		Kind string `json:"kind"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 64<<10)).Decode(&node); err != nil || node.ID == "" {
+		return nil, false, fmt.Errorf("drive's answer for %s names no node", path)
+	}
+	if node.Kind != "" && !strings.EqualFold(node.Kind, "file") {
+		return nil, false, fmt.Errorf("%s is a %s in the holder's folder, not a file", path, node.Kind)
+	}
+	url := fmt.Sprintf("https://%s/v1/tenants/%s/files/%s", d.driveHost, st.TenantID(), node.ID)
+	content, err := d.do(ctx, st, http.MethodGet, url, nil, []string{"read"})
+	if err != nil {
+		return nil, false, err
+	}
+	defer content.Body.Close()
+	if content.StatusCode == http.StatusNotFound {
+		return nil, false, nil
+	}
+	if content.StatusCode/100 != 2 {
+		return nil, false, fmt.Errorf("drive answered %d reading %s", content.StatusCode, path)
+	}
+	data, err := io.ReadAll(io.LimitReader(content.Body, 1<<20))
+	if err != nil {
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
 func (d *DriveStore) Get(ctx context.Context, sub string) (Account, error) {
 	st, err := d.coords(ctx, sub)
 	if err != nil {
 		return Account{}, err
 	}
-	res, err := d.request(ctx, st, http.MethodGet, credentialPath, nil, []string{"read"})
+	sealed, found, err := d.readFile(ctx, st, credentialPath)
 	if err != nil {
 		return Account{}, err
 	}
-	defer res.Body.Close()
-	if res.StatusCode == http.StatusNotFound {
+	// Absent, or cleared by Delete (an empty file): no account either way.
+	if !found || len(sealed) == 0 {
 		return Account{}, ErrNoAccount
-	}
-	if res.StatusCode/100 != 2 {
-		return Account{}, fmt.Errorf("drive answered %d reading the credential", res.StatusCode)
-	}
-	sealed, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	if err != nil {
-		return Account{}, err
 	}
 	plain, err := decrypt(d.key, sealed)
 	if err != nil {
@@ -349,22 +395,11 @@ func (d *DriveStore) readSealed(ctx context.Context, sub, path string) ([]byte, 
 	if err != nil {
 		return nil, false, err
 	}
-	res, err := d.request(ctx, st, http.MethodGet, path, nil, []string{"read"})
+	sealed, found, err := d.readFile(ctx, st, path)
 	if err != nil {
 		return nil, false, err
 	}
-	defer res.Body.Close()
-	if res.StatusCode == http.StatusNotFound {
-		return nil, false, nil
-	}
-	if res.StatusCode/100 != 2 {
-		return nil, false, fmt.Errorf("drive answered %d reading %s", res.StatusCode, path)
-	}
-	sealed, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	if err != nil {
-		return nil, false, err
-	}
-	if len(sealed) == 0 {
+	if !found || len(sealed) == 0 {
 		return nil, false, nil
 	}
 	plain, err := decrypt(d.key, sealed)

@@ -37,6 +37,13 @@ import (
 // SubjectHeader is how the attested runtime names the acting user.
 const SubjectHeader = "X-Privasys-On-Behalf-Of"
 
+// ElicitationHeader is set by the harness on the ONE call that carries the
+// holder's answers to a question this service asked (MCP elicitation: the
+// tool answered 428 with a schema, the person typed on their own screen, the
+// harness calls again). Its value is the question's id. A setup value that
+// arrives without it was supplied by a model, and is not accepted.
+const ElicitationHeader = "X-Privasys-Elicitation"
+
 // idleTTL is how long an unused mailbox connection is kept. IMAP connections
 // are cheap but not free, and a connector serving many users should not hold
 // one open per user forever.

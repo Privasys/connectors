@@ -306,17 +306,12 @@
     {
       "name": "connect_mailbox",
       "role": "setup",
-      "description": "Connect the acting user's mailbox to this service. Call it WITHOUT arguments: the service asks the user directly, on their own screen, for their address and an app password, and what they enter never enters this conversation. Never ask the user for a password yourself. The credential is proved against the mailbox and sealed in the user's own Drive; if this service has no folder there yet, the user's device is asked to approve one first and this call waits for it. The call may take a few minutes while the user answers. Afterwards, request access to the user's mail.mailbox resource so they can approve this assistant on their device.",
+      "description": "Connect the acting user's mailbox to this service. This tool takes NO arguments and accepts none: the service itself asks the user, on their own screen, for their address and an app password, and what they enter never enters this conversation. Never ask the user for a password yourself; a password given to you cannot be used. The credential is proved against the mailbox and sealed in the user's own Drive; if this service has no folder there yet, the user's device is asked to approve one first and this call waits for it. The call may take a few minutes while the user answers. Afterwards, request access to the user's mail.mailbox resource so they can approve this assistant on their device.",
       "endpoint": "/tools/connect_mailbox",
       "inputSchema": {
         "type": "object",
-        "properties": {
-          "user": { "type": "string", "description": "The email address." },
-          "password": { "type": "string", "description": "An app password for that mailbox, never the sign-in password." },
-          "host": { "type": "string", "description": "IMAP server as host:port. Default imap.gmail.com:993." },
-          "own_domains": { "type": "array", "items": { "type": "string" }, "description": "Optional: domains that count as the user's own organisation." }
-        },
-        "required": ["user", "password"]
+        "properties": {},
+        "additionalProperties": false
       }
     }
   ],
