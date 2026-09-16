@@ -219,7 +219,7 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 			return
 		} else if pending {
 			writeErr(w, http.StatusAccepted, "the user's device is being asked to approve this service's Drive folder, where the credential is sealed. "+
-				"Ask them to approve it on their device, then call connect_mailbox again with the same values")
+				"Ask them to approve it on their device, then call connect_mailbox again (with no arguments)")
 			return
 		}
 		out, status, err := s.linkMailbox(r.Context(), cs, sub, req)
@@ -264,18 +264,32 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 const approvalWait = 50 * time.Second
 
 // ensureFolder asks for this service's Drive folder when the holder has not
-// approved it yet and waits, briefly, for the answer. True means still
-// pending. A store without the notion (the local backend) needs nothing.
+// approved it yet, or has withdrawn it in Drive since, and waits, briefly,
+// for the answer. True means still pending. A store without the notion (the
+// local backend) needs nothing.
+//
+// The runtime's record is not enough: it cannot see a revoke made in Drive
+// and keeps saying approved, so an approved folder is PROBED with a read
+// before the credential is asked for (2026-09-16: without this, the form was
+// filled in and the write then failed with a raw 401). A withdrawn folder is
+// asked for again with retry, which the runtime honours over its record.
 func (s *Server) ensureFolder(ctx context.Context, cs store.Store, sub string) (bool, error) {
 	a, ok := cs.(store.Approver)
 	if !ok {
 		return false, nil
 	}
 	approved, err := a.Approved(ctx, sub)
-	if err != nil || approved {
+	if err != nil {
 		return false, err
 	}
-	if err := a.AskApproval(ctx, sub, false); err != nil {
+	retry := false
+	if approved {
+		if folderReady(cs.Get(ctx, sub)) {
+			return false, nil
+		}
+		retry = true
+	}
+	if err := a.AskApproval(ctx, sub, retry); err != nil {
 		return false, errors.New("could not ask for the Drive folder this service keeps the credential in: " + err.Error())
 	}
 	deadline := time.Now().Add(approvalWait)
@@ -285,11 +299,17 @@ func (s *Server) ensureFolder(ctx context.Context, cs store.Store, sub string) (
 			return true, nil
 		case <-time.After(3 * time.Second):
 		}
-		if approved, err := a.Approved(ctx, sub); err == nil && approved {
+		if folderReady(cs.Get(ctx, sub)) {
 			return false, nil
 		}
 	}
 	return true, nil
+}
+
+// folderReady reads a credential probe's outcome: a folder this service can
+// use answers with the credential or with "none yet", never with a refusal.
+func folderReady(_ store.Account, err error) bool {
+	return err == nil || errors.Is(err, store.ErrNoAccount)
 }
 
 // linkMailbox proves and stores a credential: the page's POST /v1/link and

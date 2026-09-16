@@ -4,6 +4,8 @@
 package api
 
 import (
+	"context"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -45,5 +47,38 @@ func TestLinkedHolderWithoutGrantIsToldToApprove(t *testing.T) {
 	err := s.authorise(r, "holder-1", grant.Read)
 	if err == nil || !strings.Contains(err.Error(), "request access to their "+grant.Kind) {
 		t.Fatalf("a linked holder without a grant is told about the approval: %v", err)
+	}
+}
+
+// withdrawnStore is a holder whose Drive folder this service can no longer
+// read: the runtime still says approved, Drive answers 401.
+type withdrawnStore struct{}
+
+func (withdrawnStore) Get(context.Context, string) (store.Account, error) {
+	return store.Account{}, fmt.Errorf("%w (drive answered 401 resolving credential.enc)", store.ErrFolderWithdrawn)
+}
+func (withdrawnStore) Put(context.Context, string, store.Account) error {
+	return store.ErrFolderWithdrawn
+}
+func (withdrawnStore) Delete(context.Context, string) error { return nil }
+func (withdrawnStore) Close() error                         { return nil }
+
+// A folder withdrawn in Drive is "nothing connected", whatever the runtime's
+// record and the access list say (2026-09-16: the agent read "approved" from
+// list_access and told the holder everything was set up).
+func TestWithdrawnFolderIsToldToConnectAgain(t *testing.T) {
+	s := New(withdrawnStore{}, grant.NewMemory(), true)
+	r := httptest.NewRequest("POST", "https://mail-connector.apps.test.privasys.org/tools/account", nil)
+	r.Header.Set(PeerAppHeader, "0123456789abcdef0123456789abcdef")
+	r.Header.Set(PeerVerifiedHeader, "true")
+	err := s.authorise(r, "holder-1", grant.Read)
+	if err == nil {
+		t.Fatal("a holder whose folder is withdrawn must be refused")
+	}
+	if !strings.Contains(err.Error(), "not connected") || !strings.Contains(err.Error(), "connect_mailbox with no arguments") {
+		t.Fatalf("the refusal must send the agent to connect_mailbox: %q", err)
+	}
+	if strings.Contains(err.Error(), "401") {
+		t.Fatalf("a raw Drive status is not advice: %q", err)
 	}
 }

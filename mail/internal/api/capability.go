@@ -60,6 +60,16 @@ func (s *Server) authorise(r *http.Request, sub string, need grant.Permission) e
 	}
 	g, err := s.grantStore().Find(r.Context(), sub, app)
 	if err != nil {
+		// The holder withdrew this service's folder in Drive: credential and
+		// approvals are unreadable, whatever the runtime still records, so
+		// the honest state is "nothing connected". The runtime's own record
+		// (list_access) says approved; the agent must believe THIS answer.
+		if errors.Is(err, store.ErrFolderWithdrawn) {
+			return errors.New("the user withdrew this service's Drive folder, where their mailbox credential and their approvals were kept, " +
+				"so nothing is connected any more even if an access list still says approved. " + connectAdvice(r) +
+				" connect_mailbox asks their device for the folder again first, then for the credential; after it answers linked, request access to their " +
+				grant.Kind + " resource again")
+		}
 		// Written for the agent that relays them: what is missing, what the
 		// user does about it, and where. Its access to a resource of kind
 		// grant.Kind is the user's to approve, and a mailbox can only be
@@ -107,7 +117,8 @@ func (s *Server) mailboxLinked(r *http.Request, sub string) bool {
 	// approved this service's Drive folder): nothing is linked either way.
 	// 2026-09-14 21:24 the second reading came back as "linked" and the
 	// wallet was asked again for nothing.
-	return !(errors.Is(err, store.ErrNoAccount) || errors.Is(err, broker.ErrNotApproved) || errors.Is(err, broker.ErrDeclined))
+	return !(errors.Is(err, store.ErrNoAccount) || errors.Is(err, store.ErrFolderWithdrawn) ||
+		errors.Is(err, broker.ErrNotApproved) || errors.Is(err, broker.ErrDeclined))
 }
 
 // connectAdvice tells the agent how a mailbox gets connected: in the
@@ -192,6 +203,8 @@ func (s *Server) capabilityRoutes(m *http.ServeMux) {
 			switch {
 			case errors.Is(err, broker.ErrNotApproved), errors.Is(err, broker.ErrDeclined):
 				msg = "this holder has not given the mail connector its Drive folder, where a connected mailbox would be kept, so there is nothing to approve"
+			case errors.Is(err, store.ErrFolderWithdrawn):
+				msg = "this holder withdrew the mail connector's Drive folder, so the connected mailbox is gone with it; they connect the mailbox again first"
 			case !errors.Is(err, store.ErrNoAccount):
 				msg = "the mail connector could not read this holder's mailbox record: " + err.Error()
 			}

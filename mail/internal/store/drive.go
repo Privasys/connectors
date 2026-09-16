@@ -259,6 +259,23 @@ func (d *DriveStore) do(ctx context.Context, st broker.Status, method, url strin
 	return d.http.Do(req)
 }
 
+// ErrFolderWithdrawn is Drive refusing this service's grant on the holder's
+// folder (401/403): the holder withdrew it in Drive, or it expired. The
+// runtime cannot see a revoke made in Drive and keeps reporting the folder
+// approved, so this is the only place the truth surfaces (2026-09-16: a
+// holder who had withdrawn everything was told the mailbox was connected,
+// from the runtime's record, while every real call failed with a raw 401).
+var ErrFolderWithdrawn = errors.New("the holder withdrew this service's Drive folder, where the mailbox credential and the approvals were kept")
+
+// refused maps Drive's answer to the sentinel a caller can act on; nil for
+// any status that is not a refusal of the grant itself.
+func refused(res *http.Response, what string) error {
+	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("%w (drive answered %d %s)", ErrFolderWithdrawn, res.StatusCode, what)
+	}
+	return nil
+}
+
 // readFile returns the bytes of one file in the holder's folder, or found
 // false when there is no such file. Two round trips: the path route resolves
 // the node (it is a stat, and until 2026-09-15 this store decrypted its JSON
@@ -272,6 +289,9 @@ func (d *DriveStore) readFile(ctx context.Context, st broker.Status, path string
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusNotFound {
 		return nil, false, nil
+	}
+	if err := refused(res, "resolving "+path); err != nil {
+		return nil, false, err
 	}
 	if res.StatusCode/100 != 2 {
 		return nil, false, fmt.Errorf("drive answered %d resolving %s", res.StatusCode, path)
@@ -294,6 +314,9 @@ func (d *DriveStore) readFile(ctx context.Context, st broker.Status, path string
 	defer content.Body.Close()
 	if content.StatusCode == http.StatusNotFound {
 		return nil, false, nil
+	}
+	if err := refused(content, "reading "+path); err != nil {
+		return nil, false, err
 	}
 	if content.StatusCode/100 != 2 {
 		return nil, false, fmt.Errorf("drive answered %d reading %s", content.StatusCode, path)
@@ -352,6 +375,9 @@ func (d *DriveStore) Put(ctx context.Context, sub string, a Account) error {
 		return err
 	}
 	defer res.Body.Close()
+	if err := refused(res, "writing the credential"); err != nil {
+		return err
+	}
 	if res.StatusCode/100 != 2 {
 		return fmt.Errorf("drive answered %d writing the credential", res.StatusCode)
 	}
@@ -428,6 +454,9 @@ func (d *DriveStore) writeSealed(ctx context.Context, sub, path string, plain []
 		return err
 	}
 	defer res.Body.Close()
+	if err := refused(res, "writing "+path); err != nil {
+		return err
+	}
 	if res.StatusCode/100 != 2 {
 		return fmt.Errorf("drive answered %d writing %s", res.StatusCode, path)
 	}
