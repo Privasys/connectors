@@ -159,10 +159,25 @@ func (c *Client) Status(ctx context.Context, subject string) (Status, error) {
 // retry is a user gesture, never automatic: a denial that the app can retry on
 // its own is a consent prompt that becomes spam, and the holder learns to
 // dismiss the thing they were meant to read.
-func (c *Client) Request(ctx context.Context, subject string, retry bool) error {
-	return c.do(ctx, http.MethodPost, "/api/v1/resources/"+c.resource+"/request",
-		map[string]any{"subject": subject, "retry": retry}, nil)
+func (c *Client) Request(ctx context.Context, subject string, retry bool) (Ask, error) {
+	var ask Ask
+	err := c.do(ctx, http.MethodPost, "/api/v1/resources/"+c.resource+"/request",
+		map[string]any{"subject": subject, "retry": retry}, &ask)
+	return ask, err
 }
+
+// Ask is the runtime's answer to a request: a push on its way (`pending`
+// with the nonce and this app's host, which together let another party,
+// the holder's wallet mid-approval of someone else, complete THIS ask as a
+// prerequisite), or an outcome already recorded.
+type Ask struct {
+	Status  string `json:"status"`
+	Nonce   string `json:"nonce"`
+	AppHost string `json:"app_host"`
+}
+
+// Pending reports a push on its way, with a nonce to complete it by.
+func (a Ask) Pending() bool { return a.Nonce != "" && a.AppHost != "" }
 
 // Sign returns the app's holder-of-key proof over payload. The key stays in
 // the manager; every proof is asked for.

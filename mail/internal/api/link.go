@@ -317,7 +317,7 @@ func (s *Server) ensureFolder(ctx context.Context, cs store.Store, sub string) (
 		}
 		retry = true
 	}
-	if err := a.AskApproval(ctx, sub, retry); err != nil {
+	if _, err := a.AskApproval(ctx, sub, retry); err != nil {
 		return false, errors.New("could not ask for the Drive folder this service keeps the credential in: " + err.Error())
 	}
 	deadline := time.Now().Add(approvalWait)

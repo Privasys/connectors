@@ -28,11 +28,16 @@ func TestUnlinkedHolderIsSentToLinkNotToApprove(t *testing.T) {
 		t.Fatal("an unlinked, unapproved holder must be refused")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "not connected") || !strings.Contains(msg, "connect_mailbox with no arguments") || !strings.Contains(msg, "never enters this conversation") {
-		t.Fatalf("the refusal must have the agent call connect_mailbox empty-handed and keep the password out of the chat: %q", msg)
+	// Since 2026-09-16 the wallet connects the mailbox on the approval screen
+	// (plan §3.7): the refusal sends the agent to request access, keeps the
+	// password out of the chat, and names connect_mailbox only as the
+	// fallback for an older wallet.
+	if !strings.Contains(msg, "not connected") || !strings.Contains(msg, "request access to their "+grant.Kind) ||
+		!strings.Contains(msg, "never ask for a password yourself") || !strings.Contains(msg, "connect_mailbox with no arguments") {
+		t.Fatalf("the refusal must send the agent to the wallet and keep the password out of the chat: %q", msg)
 	}
-	if !strings.Contains(msg, "Do not request access") {
-		t.Fatalf("the refusal must stop the agent asking the wallet first: %q", msg)
+	if strings.Contains(msg, "Do not request access") {
+		t.Fatalf("requesting access is the way in now: %q", msg)
 	}
 	if !strings.Contains(msg, "https://mail-connector.apps.test.privasys.org/") {
 		t.Fatalf("the page stays named for people who prefer it: %q", msg)

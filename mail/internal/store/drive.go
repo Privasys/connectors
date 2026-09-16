@@ -465,7 +465,7 @@ func (d *DriveStore) writeSealed(ctx context.Context, sub, path string, plain []
 
 // AskApproval triggers the wallet push for a holder who has not approved yet.
 // A user gesture, never automatic.
-func (d *DriveStore) AskApproval(ctx context.Context, sub string, retry bool) error {
+func (d *DriveStore) AskApproval(ctx context.Context, sub string, retry bool) (broker.Ask, error) {
 	return d.broker.Request(ctx, sub, retry)
 }
 
@@ -486,5 +486,5 @@ func (d *DriveStore) Approved(ctx context.Context, sub string) (bool, error) {
 // can say about the grant. The local backend has no such notion.
 type Approver interface {
 	Approved(ctx context.Context, sub string) (bool, error)
-	AskApproval(ctx context.Context, sub string, retry bool) error
+	AskApproval(ctx context.Context, sub string, retry bool) (broker.Ask, error)
 }

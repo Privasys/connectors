@@ -153,6 +153,14 @@ type Request struct {
 	// Opaque, forwarded verbatim by the wallet, interpreted here. It must NOT
 	// be able to name a mailbox or a holder: see Validate.
 	Req map[string]any `json:"request"`
+
+	// Setup is what the HOLDER typed on the wallet's approval screen, the
+	// answers to the schema this service declared (plan §3.7): the mailbox
+	// address and password. Composed by the wallet from the holder's own
+	// input, never by the requesting app, and used to connect the mailbox
+	// before the capability is minted. Absent when the holder had nothing
+	// to answer.
+	Setup map[string]any `json:"setup,omitempty"`
 }
 
 // maxLifetime bounds what this service will issue whatever the wallet asks.

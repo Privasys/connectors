@@ -81,9 +81,11 @@ func (s *Server) authorise(r *http.Request, sub string, need grant.Permission) e
 		// holder with no mailbox is told to link it FIRST, and only a holder
 		// who has one is told about approvals.
 		if !s.mailboxLinked(r, sub) {
+			// Since 2026-09-16 the wallet connects the mailbox on the approval
+			// screen itself (plan §3.7), so requesting access IS the way in;
+			// connect_mailbox stays the fallback for a wallet without it.
 			return errors.New("the user has not connected a mailbox yet, so there is nothing this assistant could be given access to. " +
-				connectAdvice(r) + " Do not request access to their " + grant.Kind + " resource before the mailbox is connected: " +
-				"the request would fail on their device. Once connect_mailbox has answered linked, request access and they approve it on their device")
+				connectAdvice(r))
 		}
 		switch {
 		case errors.Is(err, grant.ErrExpired):
@@ -128,9 +130,10 @@ func (s *Server) mailboxLinked(r *http.Request, sub string) bool {
 // for people who prefer it. A host that is not a plain DNS name is not
 // repeated into the text.
 func connectAdvice(r *http.Request) string {
-	return "Call connect_mailbox with no arguments: the service asks them directly on their own screen for their address and an app password, " +
-		"and what they enter never enters this conversation, so never ask them for a password yourself; " +
-		"the credential is sealed in their own Drive. They can also do it themselves at " + linkPageURL(r) + "."
+	return "Ask the user, then request access to their " + grant.Kind + " resource: their device asks them for their address and an app password on the approval screen itself " +
+		"and seals them in this service, so nothing enters this conversation and you never ask for a password yourself. " +
+		"If their device answers that there is nothing to approve (an older wallet), call connect_mailbox with no arguments instead: " +
+		"the service then asks them on their own screen. They can also do it themselves at " + linkPageURL(r) + "."
 }
 
 // linkAdvice is kept for callers that only need the page.
@@ -190,6 +193,15 @@ func (s *Server) capabilityRoutes(m *http.ServeMux) {
 			writeErr(w, http.StatusServiceUnavailable, errNotConfigured.Error())
 			return
 		}
+		// The holder's answers from the wallet's approval screen (plan
+		// §3.7): connect the mailbox first, on the same tap, and only then
+		// mint. A 428 or a 502 here is rendered by the wallet as one more
+		// question or as the provider's refusal, fields kept editable.
+		if len(req.Setup) > 0 {
+			if !s.connectFromSetup(w, r, cs, sub, req.Setup) {
+				return
+			}
+		}
 		acct, err := cs.Get(r.Context(), sub)
 		if err != nil {
 			// Approving access to a mailbox that was never linked would mint a
@@ -198,6 +210,13 @@ func (s *Server) capabilityRoutes(m *http.ServeMux) {
 			// WALLET named, because a mailbox connected under another subject
 			// (the one the harness asserts on tool calls) looks exactly like no
 			// mailbox from here (2026-09-14 22:19, four refused mints).
+			//
+			// A wallet that renders setup (§3.7) is answered with the
+			// question instead, so the holder connects on this same screen.
+			if setupNeeded(err) {
+				writeJSON(w, http.StatusPreconditionRequired, map[string]any{"elicit": setupElicit()})
+				return
+			}
 			log.Printf("[capabilities] mint for holder %.8s… by %s: no usable credential: %v", sub, subject, err)
 			msg := "this holder has not connected a mailbox yet, so there is nothing to approve"
 			switch {
@@ -233,6 +252,46 @@ func (s *Server) capabilityRoutes(m *http.ServeMux) {
 				"kind":    grant.Kind,
 			},
 		})
+	})
+
+	// What this service needs from the holder before a capability can exist
+	// (plan §3.7.1): read by the holder's wallet, mid-approval of another
+	// app, so the mailbox is connected on the approval screen itself and the
+	// credential makes one attested hop, phone to this enclave. Also open to
+	// a verified peer app (the runtime relaying it, §3.7.2). Nothing here is
+	// secret: a schema and, when this service has no folder in the holder's
+	// Drive yet, the ask the wallet completes first.
+	m.HandleFunc("GET /v1/capabilities/setup", func(w http.ResponseWriter, r *http.Request) {
+		sub := s.holder(r)
+		if sub == "" {
+			sub = strings.TrimSpace(r.URL.Query().Get("subject"))
+			if sub == "" || peerApp(r) == "" {
+				writeErr(w, http.StatusUnauthorized, "this call is not authenticated as a holder or a verified app")
+				return
+			}
+		}
+		if kind := r.URL.Query().Get("kind"); kind != "" && kind != grant.Kind {
+			writeErr(w, http.StatusNotFound, "this service issues "+grant.Kind+", not "+kind)
+			return
+		}
+		cs := s.credStore()
+		if cs == nil {
+			writeErr(w, http.StatusServiceUnavailable, errNotConfigured.Error())
+			return
+		}
+		_, err := cs.Get(r.Context(), sub)
+		switch {
+		case err == nil:
+			writeJSON(w, http.StatusOK, map[string]any{"needed": false})
+			return
+		case !setupNeeded(err):
+			writeErr(w, http.StatusServiceUnavailable, "the mail connector could not read this holder's mailbox record: "+err.Error())
+			return
+		}
+		out := setupElicit()
+		out["needed"] = true
+		out["prerequisites"] = s.folderPrerequisites(r.Context(), cs, sub, err)
+		writeJSON(w, http.StatusOK, out)
 	})
 
 	// The holder's own "apps with access" list, and their revoke. Enforcement

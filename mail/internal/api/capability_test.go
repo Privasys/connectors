@@ -196,7 +196,10 @@ func TestAppsWithAccessListing(t *testing.T) {
 }
 
 // Approving access to a mailbox nobody linked would mint a capability over
-// nothing and read on the holder's screen as though it had worked.
+// nothing and read on the holder's screen as though it had worked. Since
+// 2026-09-16 (plan §3.7) the answer is the question itself: the wallet
+// draws it on the approval screen and mints again with the answers, so
+// nothing is minted and nothing is left looking approved.
 func TestMintRefusesWhenNoMailboxIsLinked(t *testing.T) {
 	s, _ := guardedServer(t)
 	body, _ := json.Marshal(map[string]any{
@@ -207,8 +210,11 @@ func TestMintRefusesWhenNoMailboxIsLinked(t *testing.T) {
 	r.Header.Set(RelaySubjectHeader, "user-with-no-mailbox")
 	w := httptest.NewRecorder()
 	s.Routes().ServeHTTP(w, r)
-	if w.Code != http.StatusPreconditionFailed {
-		t.Fatalf("want 412, got %d: %s", w.Code, w.Body)
+	if w.Code != http.StatusPreconditionRequired || !strings.Contains(w.Body.String(), `"elicit"`) {
+		t.Fatalf("want the setup question (428), got %d: %s", w.Code, w.Body)
+	}
+	if strings.Contains(w.Body.String(), "capability_id") {
+		t.Fatal("nothing may be minted over an unconnected mailbox")
 	}
 }
 
