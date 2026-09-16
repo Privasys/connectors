@@ -66,9 +66,10 @@ func (s *Server) authorise(r *http.Request, sub string, need grant.Permission) e
 		// (list_access) says approved; the agent must believe THIS answer.
 		if errors.Is(err, store.ErrFolderWithdrawn) {
 			return errors.New("the user withdrew this service's Drive folder, where their mailbox credential and their approvals were kept, " +
-				"so nothing is connected any more even if an access list still says approved. " + connectAdvice(r) +
-				" connect_mailbox asks their device for the folder again first, then for the credential; after it answers linked, request access to their " +
-				grant.Kind + " resource again")
+				"so nothing is connected any more even if an access list still says approved. " +
+				"Ask the user, then call request_access for their " + grant.Kind + " resource WITH ask_again true: the device's record still says approved, " +
+				"and only ask_again makes it ask afresh; their device then asks for the folder and the mailbox details itself. " +
+				"If their device answers that there is nothing to approve (an older wallet), call connect_mailbox with no arguments instead")
 		}
 		// Written for the agent that relays them: what is missing, what the
 		// user does about it, and where. Its access to a resource of kind
