@@ -71,6 +71,14 @@ type Server struct {
 
 	mu    sync.Mutex
 	conns map[string]*conn
+	// feeds holds a SECOND mailbox connection per subject, for the change
+	// feed alone. `changes` parks its connection in IDLE for up to a minute,
+	// and the driver serialises calls on one connection, so with a single
+	// connection every other tool call of a run waited behind the feed (first
+	// unattended runs, 2026-09-15: get_message took a minute each and the
+	// run looked dead). The feed gets its own connection; the run's calls
+	// share the other.
+	feeds map[string]*conn
 }
 
 // SetVerifier installs the holder-token verifier. Separate from New because
@@ -97,7 +105,7 @@ type conn struct {
 }
 
 func New(s store.Store, g grant.Store, requireGrant bool) *Server {
-	srv := &Server{store: s, grants: g, requireGrant: requireGrant, conns: map[string]*conn{}}
+	srv := &Server{store: s, grants: g, requireGrant: requireGrant, conns: map[string]*conn{}, feeds: map[string]*conn{}}
 	go srv.reapIdle()
 	return srv
 }
@@ -105,20 +113,33 @@ func New(s store.Store, g grant.Store, requireGrant bool) *Server {
 func (s *Server) reapIdle() {
 	for range time.Tick(time.Minute) {
 		s.mu.Lock()
-		for sub, c := range s.conns {
-			if time.Since(c.used) > idleTTL {
-				_ = c.drv.Close()
-				delete(s.conns, sub)
+		for _, pool := range []map[string]*conn{s.conns, s.feeds} {
+			for sub, c := range pool {
+				if time.Since(c.used) > idleTTL {
+					_ = c.drv.Close()
+					delete(pool, sub)
+				}
 			}
 		}
 		s.mu.Unlock()
 	}
 }
 
-// driverFor opens or reuses the mailbox for one subject.
+// driverFor opens or reuses the mailbox for one subject: the connection the
+// tools share.
 func (s *Server) driverFor(ctx context.Context, sub string) (mail.Driver, error) {
+	return s.driverIn(ctx, sub, s.conns)
+}
+
+// feedDriverFor opens or reuses the subject's change-feed connection, kept
+// apart from the tools' one so a parked IDLE never delays a run.
+func (s *Server) feedDriverFor(ctx context.Context, sub string) (mail.Driver, error) {
+	return s.driverIn(ctx, sub, s.feeds)
+}
+
+func (s *Server) driverIn(ctx context.Context, sub string, pool map[string]*conn) (mail.Driver, error) {
 	s.mu.Lock()
-	if c, ok := s.conns[sub]; ok {
+	if c, ok := pool[sub]; ok {
 		c.used = time.Now()
 		s.mu.Unlock()
 		return c.drv, nil
@@ -151,12 +172,12 @@ func (s *Server) driverFor(ctx context.Context, sub string) (mail.Driver, error)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if c, ok := s.conns[sub]; ok { // lost a race; keep the winner
+	if c, ok := pool[sub]; ok { // lost a race; keep the winner
 		_ = drv.Close()
 		c.used = time.Now()
 		return c.drv, nil
 	}
-	s.conns[sub] = &conn{drv: drv, used: time.Now()}
+	pool[sub] = &conn{drv: drv, used: time.Now()}
 	return drv, nil
 }
 
@@ -459,7 +480,7 @@ func (s *Server) deleteDraft(ctx context.Context, _ string, drv mail.Driver, bod
 	return map[string]any{"ok": true}, nil
 }
 
-func (s *Server) changes(ctx context.Context, _ string, drv mail.Driver, body json.RawMessage) (any, error) {
+func (s *Server) changes(ctx context.Context, sub string, _ mail.Driver, body json.RawMessage) (any, error) {
 	var req struct {
 		Since   string `json:"since"`
 		WaitSec int    `json:"wait_seconds"`
@@ -470,6 +491,11 @@ func (s *Server) changes(ctx context.Context, _ string, drv mail.Driver, body js
 	wait := time.Duration(req.WaitSec) * time.Second
 	if wait > 60*time.Second {
 		wait = 60 * time.Second // the caller long-polls; it does not camp
+	}
+	// Not the tools' connection: this one parks in IDLE for the whole wait.
+	drv, err := s.feedDriverFor(ctx, sub)
+	if err != nil {
+		return nil, err
 	}
 	changes, cursor, err := drv.Changes(ctx, req.Since, wait)
 	if err != nil {

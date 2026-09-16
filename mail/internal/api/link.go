@@ -341,9 +341,11 @@ func (s *Server) proveCredential(ctx context.Context, req linkRequest) error {
 func (s *Server) dropConn(sub string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if c, ok := s.conns[sub]; ok {
-		_ = c.drv.Close()
-		delete(s.conns, sub)
+	for _, pool := range []map[string]*conn{s.conns, s.feeds} {
+		if c, ok := pool[sub]; ok {
+			_ = c.drv.Close()
+			delete(pool, sub)
+		}
 	}
 }
 
