@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -80,6 +81,15 @@ type Driver struct {
 
 var _ mail.Driver = (*Driver)(nil)
 
+// ErrUnreachable is a server that could not be reached or would not speak
+// TLS; ErrLogin one that answered and refused the credential. A caller
+// trying several servers for one address stops at the first ErrLogin: the
+// server is right, the details are not.
+var (
+	ErrUnreachable = errors.New("the mail server could not be reached")
+	ErrLogin       = errors.New("the mail server refused the credential")
+)
+
 // Open connects and authenticates.
 func Open(cfg Config) (*Driver, error) {
 	d := &Driver{cfg: cfg}
@@ -98,11 +108,11 @@ func (d *Driver) connect() error {
 		TLSConfig: &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12},
 	})
 	if err != nil {
-		return fmt.Errorf("dial %s: %w", d.cfg.Host, err)
+		return fmt.Errorf("dial %s: %w: %w", d.cfg.Host, ErrUnreachable, err)
 	}
 	if err := cl.Login(d.cfg.User, d.cfg.Password).Wait(); err != nil {
 		cl.Close()
-		return fmt.Errorf("login as %s: %w", d.cfg.User, err)
+		return fmt.Errorf("login as %s: %w: %w", d.cfg.User, ErrLogin, err)
 	}
 	d.cl = cl
 	d.sel = ""
@@ -1057,11 +1067,11 @@ func (d *Driver) connectWithHandler(arrived chan<- uint32) error {
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("dial %s: %w", d.cfg.Host, err)
+		return fmt.Errorf("dial %s: %w: %w", d.cfg.Host, ErrUnreachable, err)
 	}
 	if err := cl.Login(d.cfg.User, d.cfg.Password).Wait(); err != nil {
 		cl.Close()
-		return fmt.Errorf("login as %s: %w", d.cfg.User, err)
+		return fmt.Errorf("login as %s: %w: %w", d.cfg.User, ErrLogin, err)
 	}
 	d.cl = cl
 	d.sel = ""

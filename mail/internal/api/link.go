@@ -10,10 +10,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/Privasys/connectors/mail/internal/discover"
 	"github.com/Privasys/connectors/mail/internal/imapdrv"
 	"github.com/Privasys/connectors/mail/internal/mail"
 	"github.com/Privasys/connectors/mail/internal/store"
@@ -190,6 +192,9 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 		// This is MCP elicitation: the harness's shim turns this answer into
 		// a question on the holder's own screen and calls again with what
 		// they typed, which the model never sees (elicit.go in the harness).
+		// The address and the password only: the server is found from the
+		// address (discover), and asked for in a second question only when
+		// nothing resolves.
 		if !elicited || strings.TrimSpace(req.User) == "" || req.Password == "" {
 			writeJSON(w, http.StatusPreconditionRequired, map[string]any{
 				"elicit": map[string]any{
@@ -201,7 +206,6 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 							"user": map[string]any{"type": "string", "title": "Email address", "format": "email"},
 							"password": map[string]any{"type": "string", "title": "App password", "format": "password",
 								"description": "For Gmail: Google account > Security > App passwords. Never your sign-in password."},
-							"host": map[string]any{"type": "string", "title": "IMAP server", "default": "imap.gmail.com:993"},
 						},
 						"required": []string{"user", "password"},
 					},
@@ -222,7 +226,31 @@ func (s *Server) linkRoutes(m *http.ServeMux) {
 				"Ask them to approve it on their device, then call connect_mailbox again (with no arguments)")
 			return
 		}
-		out, status, err := s.linkMailbox(r.Context(), cs, sub, req)
+		host, tried, err := s.pickHost(r.Context(), req)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if host == "" {
+			// A second question, for the one thing that could not be found.
+			// The harness carries the earlier answers into the next call.
+			writeJSON(w, http.StatusPreconditionRequired, map[string]any{
+				"elicit": map[string]any{
+					"message": "The mail server for " + strings.TrimSpace(req.User) + " could not be found automatically.",
+					"requestedSchema": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"host": map[string]any{"type": "string", "title": "IMAP server",
+								"description": "As host:port, for example imap.example.com:993. Tried: " + strings.Join(tried, ", ") + "."},
+						},
+						"required": []string{"host"},
+					},
+				},
+			})
+			return
+		}
+		req.Host = host
+		out, status, err := s.storeMailbox(r.Context(), cs, sub, req)
 		if err != nil {
 			writeErr(w, status, err.Error())
 			return
@@ -312,23 +340,55 @@ func folderReady(_ store.Account, err error) bool {
 	return err == nil || errors.Is(err, store.ErrNoAccount)
 }
 
-// linkMailbox proves and stores a credential: the page's POST /v1/link and
-// the conversation's connect_mailbox store the same thing the same way.
-func (s *Server) linkMailbox(ctx context.Context, cs store.Store, sub string, req linkRequest) (map[string]any, int, error) {
-	req.Host = strings.TrimSpace(req.Host)
+// pickHost finds the server that accepts the credential: the one given, or
+// the address's candidates (discover) in order. An empty host with the list
+// tried means none could be reached, and the holder must name it; an error
+// means a server was reached and refused the details, which no other server
+// would fix.
+func (s *Server) pickHost(ctx context.Context, req linkRequest) (host string, tried []string, err error) {
 	req.User = strings.TrimSpace(req.User)
-	if req.Host == "" {
-		req.Host = "imap.gmail.com:993"
+	if h := strings.TrimSpace(req.Host); h != "" {
+		if !strings.Contains(h, ":") {
+			h += ":993"
+		}
+		req.Host = h
+		return h, []string{h}, s.proveCredential(ctx, req)
 	}
-	if !strings.Contains(req.Host, ":") {
-		req.Host += ":993"
+	for _, candidate := range discover.Default.Candidates(ctx, req.User) {
+		tried = append(tried, candidate)
+		attempt := req
+		attempt.Host = candidate
+		err := s.proveCredential(ctx, attempt)
+		if err == nil {
+			return candidate, tried, nil
+		}
+		if errors.Is(err, imapdrv.ErrLogin) {
+			return "", tried, err // the server answered: the details are wrong, not the server
+		}
 	}
+	return "", tried, nil
+}
+
+// linkMailbox proves and stores a credential: the page's POST /v1/link.
+func (s *Server) linkMailbox(ctx context.Context, cs store.Store, sub string, req linkRequest) (map[string]any, int, error) {
+	req.User = strings.TrimSpace(req.User)
 	if req.User == "" || req.Password == "" {
 		return nil, http.StatusBadRequest, errors.New("an address and a password are both needed")
 	}
-	if err := s.proveCredential(ctx, req); err != nil {
+	host, tried, err := s.pickHost(ctx, req)
+	if err != nil {
 		return nil, http.StatusBadGateway, err
 	}
+	if host == "" {
+		return nil, http.StatusBadRequest, errors.New("the mail server for this address could not be found (tried " +
+			strings.Join(tried, ", ") + "); give it as host:port")
+	}
+	req.Host = host
+	return s.storeMailbox(ctx, cs, sub, req)
+}
+
+// storeMailbox seals a credential already proven against req.Host.
+func (s *Server) storeMailbox(ctx context.Context, cs store.Store, sub string, req linkRequest) (map[string]any, int, error) {
 	if err := cs.Put(ctx, sub, store.Account{
 		Provider: "imap", Host: req.Host, User: req.User, Secret: req.Password,
 		OwnDomains: cleanDomains(req.OwnDomains), LinkedAt: time.Now(),
@@ -347,7 +407,7 @@ func (s *Server) linkMailbox(ctx context.Context, cs store.Store, sub string, re
 func (s *Server) proveCredential(ctx context.Context, req linkRequest) error {
 	drv, err := imapdrv.Open(imapdrv.Config{Host: req.Host, User: req.User, Password: req.Password})
 	if err != nil {
-		return errors.New("the mailbox refused these details: " + err.Error())
+		return fmt.Errorf("the mailbox refused these details: %w", err)
 	}
 	defer drv.Close()
 	// A login that succeeds but cannot list is a mailbox with IMAP disabled,
