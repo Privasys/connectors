@@ -208,6 +208,9 @@ func (s *Server) Routes() *http.ServeMux {
 	s.tool(m, "/tools/changes", grant.Read, s.changes)
 
 	s.capabilityRoutes(m)
+	// The shared list and revoke the wallet speaks, over the same store as this
+	// service's own /v1/apps pair. See capability_holder.go.
+	s.capabilityHolderRoutes(m)
 	s.linkRoutes(m)
 	s.configureRoutes(m)
 	s.extensionsRoute(m)
