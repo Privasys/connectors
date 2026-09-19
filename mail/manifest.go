@@ -52,9 +52,10 @@ var (
 // owner-only ones.
 //
 // `configure` is excluded deliberately rather than by accident of ordering. It
-// points this deployment at the service that holds every holder's credential,
-// and an agent that could call it could move them. It is the operator's, and
-// the operator reaches it through the platform.
+// names the identity provider whose word this deployment takes on who a
+// holder is, and an agent that could call it could decide whose approvals
+// count. It is the operator's, and the operator reaches it through the
+// platform.
 func AgentTools() ([]Tool, error) {
 	once.Do(func() {
 		var doc struct {

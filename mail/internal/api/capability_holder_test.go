@@ -16,20 +16,28 @@ import (
 	"github.com/Privasys/connectors/mail/internal/store"
 )
 
-// holderServer reuses the package’s recording store, so "the credential is
-// gone" is observed the same way the link tests observe it: Get no longer
-// finds it.
-func holderServer(t *testing.T) (*Server, *recordingStore) {
+// holderServer runs over the real memory store, so "the credential is gone"
+// is observed the way the connector observes it: Get no longer finds it. The
+// pooled connections are fakes that record being closed.
+func holderServer(t *testing.T) (*Server, *store.Memory, *fakeDriver, *fakeDriver) {
 	t.Helper()
-	cs := newRecordingStore()
-	_ = cs.Put(context.Background(), "user-1", store.Account{Provider: "imap", User: "u@example.com"})
-	return &Server{store: cs, grants: grant.NewMemory()}, cs
+	cs := store.NewMemory()
+	_ = cs.Put(context.Background(), "user-1", store.Account{Provider: "imap", User: "u@example.com", Secret: "pw"})
+	tools, feed := &fakeDriver{}, &fakeDriver{}
+	s := &Server{
+		store:  cs,
+		grants: grant.NewMemory(),
+		conns:  map[string]*conn{"user-1": {drv: tools, used: time.Now()}},
+		feeds:  map[string]*conn{"user-1": {drv: feed, used: time.Now()}},
+	}
+	return s, cs, tools, feed
 }
 
-func credentialGone(cs *recordingStore, sub string) bool {
+func credentialGone(cs store.Store, sub string) bool {
 	_, err := cs.Get(context.Background(), sub)
 	return errors.Is(err, store.ErrNoAccount)
 }
+
 func listCaps(t *testing.T, s *Server, sub string) (int, []capabilityView) {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodGet, "/v1/capabilities", nil)
@@ -53,7 +61,7 @@ func revokeCap(t *testing.T, s *Server, sub, id string) int {
 }
 
 func TestHolderListsCapabilitiesInTheSharedShape(t *testing.T) {
-	s, _ := holderServer(t)
+	s, _, _, _ := holderServer(t)
 	id := mint(t, s, "user-1", []string{"read", "write"})
 
 	code, caps := listCaps(t, s, "user-1")
@@ -84,7 +92,7 @@ func TestHolderListsCapabilitiesInTheSharedShape(t *testing.T) {
 // One holder cannot see another's, and the list is per holder rather than per
 // service.
 func TestCapabilityListIsPerHolder(t *testing.T) {
-	s, _ := holderServer(t)
+	s, _, _, _ := holderServer(t)
 	mint(t, s, "user-1", []string{"read"})
 
 	_, caps := listCaps(t, s, "user-2")
@@ -95,9 +103,10 @@ func TestCapabilityListIsPerHolder(t *testing.T) {
 
 // The promise the wallet makes when it says the service destroys its copy.
 // Only this service can honour it, which is why revocation cannot be a flag in
-// the wallet.
-func TestLastRevokeDestroysTheSealedCredential(t *testing.T) {
-	s, cs := holderServer(t)
+// the wallet. With the credential go the mailbox connections opened with it:
+// a pooled session that outlived it would keep reading until the reaper came.
+func TestLastRevokeForgetsTheCredentialAndClosesTheConnections(t *testing.T) {
+	s, cs, tools, feed := holderServer(t)
 	id := mint(t, s, "user-1", []string{"read"})
 
 	if code := revokeCap(t, s, "user-1", id); code != http.StatusNoContent {
@@ -106,9 +115,39 @@ func TestLastRevokeDestroysTheSealedCredential(t *testing.T) {
 	if !credentialGone(cs, "user-1") {
 		t.Fatal("the last capability went and the mailbox credential outlived it")
 	}
+	if !tools.closed || !feed.closed {
+		t.Fatalf("the mailbox connections outlived the credential (tools closed %v, feed closed %v)", tools.closed, feed.closed)
+	}
+	s.mu.Lock()
+	_, pooled := s.conns["user-1"]
+	_, pooledFeed := s.feeds["user-1"]
+	s.mu.Unlock()
+	if pooled || pooledFeed {
+		t.Fatal("a closed connection was left in the pool")
+	}
 	_, caps := listCaps(t, s, "user-1")
 	if len(caps) != 0 {
 		t.Fatalf("still listed after revoke: %v", caps)
+	}
+	// And the next tool call is the refusal that sends the agent to the
+	// holder's device, not a stale read.
+	credentialNeededBody(t, callAs(t, s, "/tools/list_messages", "user-1", testApp, `{}`))
+}
+
+// The older revoke route keeps the same consequence.
+func TestOlderRevokeRouteForgetsTheCredentialToo(t *testing.T) {
+	s, cs, tools, _ := holderServer(t)
+	id := mint(t, s, "user-1", []string{"read"})
+
+	r := httptest.NewRequest(http.MethodDelete, "/v1/grants/"+id, nil)
+	r.Header.Set(RelaySubjectHeader, "user-1")
+	w := httptest.NewRecorder()
+	s.Routes().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("revoke = %d, want 200", w.Code)
+	}
+	if !credentialGone(cs, "user-1") || !tools.closed {
+		t.Fatal("the older revoke route left the credential or its connection behind")
 	}
 }
 
@@ -117,7 +156,7 @@ func TestLastRevokeDestroysTheSealedCredential(t *testing.T) {
 // it survives while any other capability is live. Destroying it on the first
 // revoke would cut off access the holder never withdrew.
 func TestRevokingOneOfTwoKeepsTheCredential(t *testing.T) {
-	s, cs := holderServer(t)
+	s, cs, tools, _ := holderServer(t)
 	first := mint(t, s, "user-1", []string{"read"})
 	// A DIFFERENT app: one live grant per app per holder, so re-approving the
 	// same app replaces rather than accumulates.
@@ -136,6 +175,9 @@ func TestRevokingOneOfTwoKeepsTheCredential(t *testing.T) {
 	if credentialGone(cs, "user-1") {
 		t.Fatal("the credential was destroyed while another capability was still live")
 	}
+	if tools.closed {
+		t.Fatal("the other app's connection was closed under it")
+	}
 
 	if code := revokeCap(t, s, "user-1", second.ID); code != http.StatusNoContent {
 		t.Fatalf("second revoke = %d, want 204", code)
@@ -146,7 +188,7 @@ func TestRevokingOneOfTwoKeepsTheCredential(t *testing.T) {
 }
 
 func TestRevokingSomethingElsesCapabilityIsNotFound(t *testing.T) {
-	s, cs := holderServer(t)
+	s, cs, _, _ := holderServer(t)
 	id := mint(t, s, "user-1", []string{"read"})
 
 	if code := revokeCap(t, s, "user-2", id); code != http.StatusNotFound {
@@ -161,7 +203,7 @@ func TestRevokingSomethingElsesCapabilityIsNotFound(t *testing.T) {
 }
 
 func TestCapabilityRoutesNeedAnAuthenticatedHolder(t *testing.T) {
-	s, _ := holderServer(t)
+	s, _, _, _ := holderServer(t)
 	for _, c := range []struct {
 		method, path string
 	}{

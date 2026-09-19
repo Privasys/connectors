@@ -209,9 +209,10 @@ func (r Request) Validate(now time.Time) (subject string, perms []Permission, er
 
 // ---------------------------------------------------------------- store
 
-// Store holds grants. In production this is the user's own Drive, like the
-// credential: revoking there is what makes the holder's own revoke button the
-// real thing rather than a request we honour.
+// Store holds grants. In production this is Memory, beside the credential:
+// both live only in this process, both go at a restart, and both come back
+// with the wallet's next mint. Revoking here is what makes the holder's own
+// revoke button the real thing rather than a request we honour.
 type Store interface {
 	Mint(ctx context.Context, userSub string, g Grant) (Grant, error)
 	// Find returns the live grant for one app acting for one user.
@@ -220,8 +221,10 @@ type Store interface {
 	Revoke(ctx context.Context, userSub, id string) error
 }
 
-// Memory is an in-process store. Enough to run and to test; it loses grants on
-// restart, which for a capability is the safe direction to fail.
+// Memory is the in-process store, and the only one. It loses grants on
+// restart, which for a capability is the safe direction to fail, and the
+// price the design accepts (2026-09-17): the holder is asked once more on
+// their phone and the credential comes back with the capability.
 type Memory struct {
 	mu sync.Mutex
 	by map[string][]Grant // userSub -> grants
@@ -300,8 +303,7 @@ func (m *Memory) Revoke(_ context.Context, userSub, id string) error {
 	return nil
 }
 
-// NewID mints a grant id. Shared with the other stores so an id looks the
-// same wherever the grant is kept.
+// NewID mints a grant id: 16 random bytes, hex.
 func NewID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)

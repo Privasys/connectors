@@ -36,6 +36,7 @@ type fakeDriver struct {
 	labelsAdded []string
 	drafted     mail.Draft
 	msg         mail.Message
+	closed      bool
 }
 
 func (f *fakeDriver) List(context.Context, mail.ListOptions) (mail.Page, error) {
@@ -67,7 +68,7 @@ func (f *fakeDriver) DeleteDraft(context.Context, string) error { return nil }
 func (f *fakeDriver) Changes(context.Context, string, time.Duration) ([]mail.Change, string, error) {
 	return nil, "1", nil
 }
-func (f *fakeDriver) Close() error { return nil }
+func (f *fakeDriver) Close() error { f.closed = true; return nil }
 
 func newTestServer(t *testing.T) (*Server, *fakeDriver) {
 	t.Helper()
@@ -76,11 +77,43 @@ func newTestServer(t *testing.T) (*Server, *fakeDriver) {
 		Text:   "hello",
 	}}
 	s := &Server{
-		store:  fakeStore{subs: map[string]store.Account{"user-1": {Provider: "imap", User: "u@example.com"}}},
+		store:  fakeStore{subs: map[string]store.Account{"user-1": {Provider: "imap", User: "u@example.com", Secret: "super-secret-app-password"}}},
 		grants: grant.NewMemory(),
 		conns:  map[string]*conn{"user-1": {drv: drv, used: time.Now()}},
+		feeds:  map[string]*conn{},
 	}
 	return s, drv
+}
+
+// credentialNeededBody checks the one refusal every tool gives when the
+// holder's credential is not in memory: 403, the two flags, and a sentence
+// that sends the agent to request_access WITH ask_again and nowhere else.
+func credentialNeededBody(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("want 403 without a credential in memory, got %d: %s", w.Code, w.Body)
+	}
+	var got struct {
+		Error            string `json:"error"`
+		CredentialNeeded bool   `json:"credential_needed"`
+		NeedsHolder      bool   `json:"needs_holder"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("not the JSON refusal: %v (%s)", err, w.Body)
+	}
+	if !got.CredentialNeeded || !got.NeedsHolder {
+		t.Fatalf("both flags must be set: %s", w.Body)
+	}
+	for _, want := range []string{"not in this service's memory", "on the user's device", "request_access", "mail.mailbox", "ask_again"} {
+		if !strings.Contains(got.Error, want) {
+			t.Errorf("the refusal should say %q: %q", want, got.Error)
+		}
+	}
+	for _, never := range []string{"http://", "https://", "connect_mailbox", "retry", "page"} {
+		if strings.Contains(got.Error, never) {
+			t.Errorf("the refusal must not say %q: %q", never, got.Error)
+		}
+	}
 }
 
 func call(t *testing.T, s *Server, path, sub, body string) *httptest.ResponseRecorder {
@@ -104,13 +137,57 @@ func TestRefusesACallWithNoActingUser(t *testing.T) {
 	}
 }
 
-func TestUnknownUserIsNotAnError(t *testing.T) {
+// A holder whose credential is not in memory (never connected, or this
+// process restarted since) gets the one refusal that sends the agent to the
+// holder's device. Not 500 and not 401: the caller is legitimate.
+func TestUnknownUserIsToldToAskTheHoldersDevice(t *testing.T) {
 	s, _ := newTestServer(t)
-	w := call(t, s, "/tools/list_messages", "someone-else", `{}`)
-	// Not 500 and not 401: the caller is legitimate, they just have not linked
-	// a mailbox, and the agent should say so rather than report a fault.
-	if w.Code != http.StatusPreconditionFailed {
-		t.Fatalf("want 412 for an unlinked user, got %d: %s", w.Code, w.Body)
+	credentialNeededBody(t, call(t, s, "/tools/list_messages", "someone-else", `{}`))
+	// The change feed answers the same way, at both paths.
+	credentialNeededBody(t, call(t, s, "/tools/changes", "someone-else", `{}`))
+	credentialNeededBody(t, call(t, s, "/api/v1/mcp/tools/changes", "someone-else", `{}`))
+}
+
+// The secret goes in and never comes back out of any endpoint an agent can
+// call.
+func TestAccountToolNeverReturnsTheSecret(t *testing.T) {
+	s, _ := newTestServer(t)
+	w := call(t, s, "/tools/account", "user-1", `{}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	if strings.Contains(w.Body.String(), "super-secret-app-password") {
+		t.Fatalf("the account tool returned the secret: %s", w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "u@example.com") {
+		t.Errorf("the agent should see which mailbox is connected: %s", w.Body)
+	}
+}
+
+// The root answers, and answers 200, so a probe or a person landing on the
+// host is told what this is rather than shown a 404. It is not a page to
+// type anything on.
+func TestRootSaysWhatThisIsAndHasNoForm(t *testing.T) {
+	s, _ := newTestServer(t)
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	s.Routes().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 at the root, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("the root is JSON, not a page: %q", ct)
+	}
+	for _, never := range []string{"<form", "<input", "password", "<script"} {
+		if strings.Contains(strings.ToLower(w.Body.String()), never) {
+			t.Errorf("the root must not be a place to type a secret (%q): %s", never, w.Body)
+		}
+	}
+	r = httptest.NewRequest(http.MethodGet, "/nothing-here", nil)
+	w = httptest.NewRecorder()
+	s.Routes().ServeHTTP(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("an unknown path is still a 404, got %d", w.Code)
 	}
 }
 

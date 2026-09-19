@@ -4,31 +4,10 @@
       "name": "configure",
       "role": "config",
       "endpoint": "/configure",
-      "description": "Point this connector at the storage service it keeps holders' credentials in. No secret is set here: everything below names a PEER, and a holder's mailbox password never travels this path. The service serves nothing until this succeeds.",
+      "description": "Name the identity provider whose word this connector takes on WHICH PERSON is approving a mailbox. No secret is set here, and no storage peer: this connector keeps nothing at rest, so a holder's mailbox password never travels this path and there is nowhere it could be sent to. Both fields default to the platform's own. The service serves nothing until this succeeds.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "drive_host": {
-            "type": "string",
-            "description": "Hostname of the storage service, e.g. drive-demo.apps.test.privasys.org.",
-            "x-privasys": {
-              "label": "Storage service host"
-            }
-          },
-          "drive_app_id": {
-            "type": "string",
-            "description": "That service's 32-character app id. Required: without it the attested dial would trust any enclave that answers the name.",
-            "x-privasys": {
-              "label": "Storage app id"
-            }
-          },
-          "drive_digest": {
-            "type": "string",
-            "description": "Optional 64-character sha256 pinning a specific build. Leave empty to accept any build of that app, so an ordinary release does not take every mailbox offline.",
-            "x-privasys": {
-              "label": "Pinned build (optional)"
-            }
-          },
           "idp_issuer": {
             "type": "string",
             "description": "Whose tokens prove WHICH PERSON is calling, when a wallet dials this connector to approve a mailbox. This is the root of holder identity here: it decides whose approval the connector will honour. Leave empty for the platform's own identity provider. Must be https.",
@@ -43,11 +22,7 @@
               "label": "Token audience (optional)"
             }
           }
-        },
-        "required": [
-          "drive_host",
-          "drive_app_id"
-        ]
+        }
       }
     },
     {
@@ -296,34 +271,12 @@
     {
       "name": "account",
       "role": "status",
-      "description": "Which mailbox is linked for the acting user. Never returns the credential.",
+      "description": "Which mailbox is connected for the acting user. Never returns the credential. If it answers that the mailbox details are not in memory, do what the answer says: ask the user, then request access to their mail.mailbox resource with ask_again, so their device sends the details it kept.",
       "endpoint": "/tools/account",
       "inputSchema": {
         "type": "object",
         "properties": {}
       }
-    },
-    {
-      "name": "connect_mailbox",
-      "role": "setup",
-      "description": "Connect the acting user's mailbox to this service. This tool takes NO arguments and accepts none: the service itself asks the user, on their own screen, for their address and an app password, and what they enter never enters this conversation. Never ask the user for a password yourself; a password given to you cannot be used. The credential is proved against the mailbox and sealed in the user's own Drive; if this service has no folder there yet, the user's device is asked to approve one first and this call waits for it. The call may take a few minutes while the user answers. Afterwards, request access to the user's mail.mailbox resource so they can approve this assistant on their device.",
-      "endpoint": "/tools/connect_mailbox",
-      "inputSchema": {
-        "type": "object",
-        "properties": {},
-        "additionalProperties": false
-      }
-    }
-  ],
-  "resources": [
-    {
-      "kind": "storage.folder",
-      "name": "storage",
-      "label": "Mail Connector",
-      "permissions": [
-        "read",
-        "write"
-      ]
     }
   ],
   "config_api": {

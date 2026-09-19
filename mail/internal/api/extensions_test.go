@@ -35,16 +35,16 @@ func extensions(t *testing.T, s *Server) []extensionEntry {
 // which happens before an operator has configured anything.
 func TestExtensionsEmptyBeforeConfigure(t *testing.T) {
 	s, _ := newTestServer(t)
-	s.SetConfigurable("/tmp/x", nil, config.Config{}, false)
+	s.SetConfigurable("/tmp/x", config.Config{}, false)
 	if got := extensions(t, s); len(got) != 0 {
 		t.Fatalf("want no claims before configure, got %+v", got)
 	}
 }
 
-func TestExtensionsPublishTheConfigDigest(t *testing.T) {
+func TestExtensionsPublishTheConfigDigestAndNothingElse(t *testing.T) {
 	s, _ := newTestServer(t)
-	cfg := config.Config{DriveHost: "drive.example", DriveAppID: "02104572ca2f41e8ae2d24c0294e6f5e"}
-	s.SetConfigurable("/tmp/x", nil, cfg, true)
+	cfg := config.Config{IdpIssuer: "https://idp.example", IdpAudience: "aud-example"}.Normalised()
+	s.SetConfigurable("/tmp/x", cfg, true)
 
 	got := extensions(t, s)
 	byOID := map[string]string{}
@@ -53,6 +53,11 @@ func TestExtensionsPublishTheConfigDigest(t *testing.T) {
 	}
 	if _, ok := byOID[oidConfigDigest]; !ok {
 		t.Fatalf("no config digest in %+v", got)
+	}
+	// One claim. There is no storage peer, so there is no "peer build
+	// pinned" bit to publish beside the digest any more.
+	if len(got) != 1 {
+		t.Fatalf("want the digest alone, got %+v", got)
 	}
 
 	// Every value must be valid DER, because the runtime puts it into a
@@ -68,10 +73,10 @@ func TestExtensionsPublishTheConfigDigest(t *testing.T) {
 		}
 	}
 
-	// The peer's identity must not appear in the clear: a certificate
-	// extension is visible to anyone who opens a connection.
+	// The values must not appear in the clear: a certificate extension is
+	// visible to anyone who opens a connection.
 	body, _ := json.Marshal(got)
-	for _, secretish := range []string{"drive.example", "02104572ca2f41e8ae2d24c0294e6f5e"} {
+	for _, secretish := range []string{"idp.example", "aud-example"} {
 		if strings.Contains(string(body), secretish) {
 			t.Errorf("%q is published in the clear: %s", secretish, body)
 		}
@@ -82,7 +87,7 @@ func TestExtensionsPublishTheConfigDigest(t *testing.T) {
 func TestConfigDigestChangesWithTheConfiguration(t *testing.T) {
 	digestFor := func(c config.Config) string {
 		s, _ := newTestServer(t)
-		s.SetConfigurable("/tmp/x", nil, c, true)
+		s.SetConfigurable("/tmp/x", c.Normalised(), true)
 		for _, e := range extensions(t, s) {
 			if e.OID == oidConfigDigest {
 				return e.Value
@@ -91,48 +96,24 @@ func TestConfigDigestChangesWithTheConfiguration(t *testing.T) {
 		t.Fatal("no digest")
 		return ""
 	}
-	base := config.Config{DriveHost: "a.example", DriveAppID: "02104572ca2f41e8ae2d24c0294e6f5e"}
-	other := config.Config{DriveHost: "b.example", DriveAppID: "02104572ca2f41e8ae2d24c0294e6f5e"}
-	pinned := base
-	pinned.DriveDigest = strings.Repeat("a", 64)
+	base := config.Config{IdpIssuer: "https://a.example", IdpAudience: "aud"}
+	otherIssuer := config.Config{IdpIssuer: "https://b.example", IdpAudience: "aud"}
+	otherAudience := config.Config{IdpIssuer: "https://a.example", IdpAudience: "other"}
+	// The NUL separator is what keeps two fields from being rearranged into
+	// the same digest: "ab" + "" must not hash like "a" + "b".
+	shifted := config.Config{IdpIssuer: "https://a.exampleaud", IdpAudience: "x"}
 
-	if digestFor(base) == digestFor(other) {
-		t.Error("a different host produced the same digest")
+	if digestFor(base) == digestFor(otherIssuer) {
+		t.Error("a different issuer produced the same digest")
 	}
-	if digestFor(base) == digestFor(pinned) {
-		t.Error("pinning a build produced the same digest")
+	if digestFor(base) == digestFor(otherAudience) {
+		t.Error("a different audience produced the same digest")
+	}
+	if digestFor(base) == digestFor(shifted) {
+		t.Error("moving characters between fields produced the same digest")
 	}
 	if digestFor(base) != digestFor(base) {
 		t.Error("the digest is not stable for the same configuration")
-	}
-}
-
-// Whether the peer's build is pinned changes what a verifier may conclude, so
-// it is published rather than left to the log.
-func TestPeerPinnedFlag(t *testing.T) {
-	flagFor := func(digest string) byte {
-		s, _ := newTestServer(t)
-		s.SetConfigurable("/tmp/x", nil, config.Config{
-			DriveHost: "a.example", DriveAppID: "02104572ca2f41e8ae2d24c0294e6f5e", DriveDigest: digest,
-		}, true)
-		for _, e := range extensions(t, s) {
-			if e.OID == oidPeerPinned {
-				raw, _ := base64.StdEncoding.DecodeString(e.Value)
-				var out []byte
-				_, _ = asn1.Unmarshal(raw, &out)
-				if len(out) == 1 {
-					return out[0]
-				}
-			}
-		}
-		t.Fatal("no pinned flag")
-		return 9
-	}
-	if flagFor("") != 0 {
-		t.Error("unpinned should publish 0")
-	}
-	if flagFor(strings.Repeat("a", 64)) != 1 {
-		t.Error("pinned should publish 1")
 	}
 }
 
@@ -140,9 +121,7 @@ func TestPeerPinnedFlag(t *testing.T) {
 // 5.4, because identity is stamped by the measured manager and never
 // self-declared.
 func TestOnlyAppDefinedArcIsUsed(t *testing.T) {
-	for _, oid := range []string{oidConfigDigest, oidPeerPinned} {
-		if !strings.HasPrefix(oid, "1.3.6.1.4.1.65230.5.4.") {
-			t.Errorf("%s is outside the app-defined arc and would be dropped", oid)
-		}
+	if !strings.HasPrefix(oidConfigDigest, "1.3.6.1.4.1.65230.5.4.") {
+		t.Errorf("%s is outside the app-defined arc and would be dropped", oidConfigDigest)
 	}
 }

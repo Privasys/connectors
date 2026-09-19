@@ -320,9 +320,9 @@ func TestActingUserHeaderCannotEstablishAHolder(t *testing.T) {
 		{"mint a capability", http.MethodPost, "/v1/capabilities", string(body)},
 		{"list what a holder approved", http.MethodGet, "/v1/apps", ""},
 		{"revoke a holder's approval", http.MethodDelete, "/v1/grants/whatever", ""},
-		{"see a holder's mailbox", http.MethodGet, "/v1/link", ""},
-		{"link a mailbox", http.MethodPost, "/v1/link", `{"user":"a@b.example","password":"x"}`},
-		{"disconnect a mailbox", http.MethodDelete, "/v1/link", ""},
+		{"read what a holder must answer", http.MethodGet, "/v1/capabilities/setup", ""},
+		{"list a holder's capabilities", http.MethodGet, "/v1/capabilities", ""},
+		{"revoke a holder's capability", http.MethodDelete, "/v1/capabilities/whatever", ""},
 	} {
 		var r *http.Request
 		if c.body == "" {

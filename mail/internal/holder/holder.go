@@ -17,7 +17,8 @@
 //  1. The relay-asserted subject header, which the runtime's session-relay
 //     middleware sets from a wallet-authenticated sealed session and STRIPS
 //     from every inbound request first, so it cannot be spoofed by a caller.
-//     This is the person sitting in front of the linking page.
+//     This is a person reaching this service through the platform's own
+//     sealed session, their wallet having signed them in.
 //
 //  2. A bearer token from the platform's identity provider, verified here
 //     against its JWKS. This is the wallet, dialling the connector directly
@@ -140,7 +141,7 @@ func (v *JWKS) Verify(ctx context.Context, token string) (*Identity, error) {
 	exp, ok := claims["exp"].(float64)
 	if !ok {
 		// An unbounded token is not something to shrug at: it would let a
-		// captured bearer link a mailbox forever.
+		// captured bearer approve a mailbox forever.
 		return nil, errors.New("token has no expiry")
 	}
 	if time.Now().Unix() > int64(exp) {

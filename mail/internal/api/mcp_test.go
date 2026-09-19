@@ -51,9 +51,10 @@ func TestCatalogueIsServedWithoutAnActingUser(t *testing.T) {
 	}
 }
 
-// configure points this deployment at the service holding every holder's
-// credential. An agent that could call it could move them, so it must not
-// appear in the catalogue and must not be callable at the agent's path.
+// configure names the identity provider whose word this deployment takes on
+// who a holder is. An agent that could call it could decide whose approvals
+// count, so it must not appear in the catalogue and must not be callable at
+// the agent's path.
 func TestConfigureIsNotAnAgentTool(t *testing.T) {
 	s, _ := guardedServer(t)
 	for _, tool := range catalogue(t, s) {
@@ -62,15 +63,15 @@ func TestConfigureIsNotAnAgentTool(t *testing.T) {
 		}
 	}
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/mcp/tools/configure",
-		strings.NewReader(`{"drive_host":"attacker.example","drive_app_id":"00000000000000000000000000000000"}`))
+		strings.NewReader(`{"idp_issuer":"https://attacker.example","idp_audience":"anything"}`))
 	r.Header.Set(SubjectHeader, "user-1")
 	r.Header.Set(PeerAppHeader, testApp)
 	w := httptest.NewRecorder()
 	s.Routes().ServeHTTP(w, r)
-	// 405 rather than 404, because the linking page's `GET /` matches the path
-	// for a different method. Either is a refusal; what must never happen is a
-	// 2xx, which would mean an agent had just repointed the service that holds
-	// every holder's credential.
+	// 405 rather than 404, because the root's `GET /` matches the path for a
+	// different method. Either is a refusal; what must never happen is a 2xx,
+	// which would mean an agent had just chosen whose approvals this service
+	// honours.
 	if w.Code != http.StatusNotFound && w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("configure must not be reachable at the agent's path, got %d %s", w.Code, w.Body)
 	}
@@ -110,13 +111,10 @@ func TestEveryAdvertisedToolIsCallableAndEnforced(t *testing.T) {
 			t.Errorf("%s served a call with no acting user: %d", name, w.Code)
 		}
 
-		// And an app with no capability is refused here too. The one
-		// exception is the setup role: connecting the mailbox is what makes a
-		// capability possible, so it cannot be behind one; it still needs an
-		// acting user (checked above) and a verified calling app.
-		if name == "connect_mailbox" {
-			continue
-		}
+		// And an app with no capability is refused here too. There is no
+		// exception any more: the mailbox is connected on the wallet's
+		// approval screen, not through a tool, so every tool is behind a
+		// capability.
 		r = httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
 		r.Header.Set(SubjectHeader, "user-1")
 		r.Header.Set(PeerAppHeader, "0123456789abcdef0123456789abcdef")

@@ -37,19 +37,15 @@ import (
 // SubjectHeader is how the attested runtime names the acting user.
 const SubjectHeader = "X-Privasys-On-Behalf-Of"
 
-// ElicitationHeader is set by the harness on the ONE call that carries the
-// holder's answers to a question this service asked (MCP elicitation: the
-// tool answered 428 with a schema, the person typed on their own screen, the
-// harness calls again). Its value is the question's id. A setup value that
-// arrives without it was supplied by a model, and is not accepted.
-const ElicitationHeader = "X-Privasys-Elicitation"
-
 // idleTTL is how long an unused mailbox connection is kept. IMAP connections
 // are cheap but not free, and a connector serving many users should not hold
 // one open per user forever.
 const idleTTL = 20 * time.Minute
 
 type Server struct {
+	// store holds each holder's credential in memory, and grants their
+	// capabilities beside it. Both are lost together at a restart, and both
+	// come back together with the wallet's next mint.
 	store  store.Store
 	grants grant.Store
 
@@ -62,6 +58,9 @@ type Server struct {
 	// cfg is the configure-then-freeze state, nil when the deployment takes no
 	// configuration.
 	cfg *configurable
+
+	// prove stands in for the mailbox when a test connects one; nil dials it.
+	prove func(context.Context, mailboxDetails) error
 
 	// tokens verifies a holder's own bearer token, which is how the WALLET
 	// identifies the person when it dials this service directly to mint a
@@ -125,6 +124,20 @@ func (s *Server) reapIdle() {
 	}
 }
 
+// dropConn closes and forgets both of a subject's mailbox connections: the
+// tools' and the feed's. Called when the credential they were opened with
+// is replaced or forgotten.
+func (s *Server) dropConn(sub string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, pool := range []map[string]*conn{s.conns, s.feeds} {
+		if c, ok := pool[sub]; ok {
+			_ = c.drv.Close()
+			delete(pool, sub)
+		}
+	}
+}
+
 // driverFor opens or reuses the mailbox for one subject: the connection the
 // tools share.
 func (s *Server) driverFor(ctx context.Context, sub string) (mail.Driver, error) {
@@ -146,11 +159,7 @@ func (s *Server) driverIn(ctx context.Context, sub string, pool map[string]*conn
 	}
 	s.mu.Unlock()
 
-	cs := s.credStore()
-	if cs == nil {
-		return nil, errNotConfigured
-	}
-	acct, err := cs.Get(ctx, sub)
+	acct, err := s.credStore().Get(ctx, sub)
 	if err != nil {
 		return nil, err
 	}
@@ -192,6 +201,24 @@ func (s *Server) Routes() *http.ServeMux {
 		writeJSON(w, http.StatusOK, map[string]any{"ready": true})
 	})
 
+	// The root says what this is and that there is nothing to do here. There
+	// used to be a page on which a holder typed their mailbox details; the
+	// wallet's approval screen is now the only place a secret is typed. The
+	// root still answers, and answers 200, so a probe or a person landing on
+	// the host is told where things happen rather than shown a 404.
+	m.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"service": "Privasys Mail Connector",
+			"note": "Reads one mailbox for one attested agent, under a capability the holder approved on their device. " +
+				"There is no page to connect a mailbox on: the holder's wallet asks for the details on the approval screen, " +
+				"and this service keeps them only in memory.",
+		})
+	})
+
 	// The permission each tool needs. Reading and writing are different
 	// sentences on the holder's approval screen, so they are different checks
 	// here: a holder who approved read-only must not find the agent labelling.
@@ -211,7 +238,6 @@ func (s *Server) Routes() *http.ServeMux {
 	// The shared list and revoke the wallet speaks, over the same store as this
 	// service's own /v1/apps pair. See capability_holder.go.
 	s.capabilityHolderRoutes(m)
-	s.linkRoutes(m)
 	s.configureRoutes(m)
 	s.extensionsRoute(m)
 	s.mcpRoutes(m)
@@ -240,8 +266,20 @@ func (s *Server) tool(m *http.ServeMux, path string, need grant.Permission, h ha
 			return
 		}
 		if !s.configured() {
-			writeErr(w, http.StatusServiceUnavailable,
-				"this deployment has not been configured yet, so it has nowhere to keep a credential")
+			writeErr(w, http.StatusServiceUnavailable, errNotConfigured.Error())
+			return
+		}
+		// The credential BEFORE the capability. After a restart both are
+		// gone, and what the agent must do then is ask the holder's device
+		// afresh (ask_again), which is a different instruction from "ask the
+		// user to approve": a plain request would find the device's record
+		// still saying approved and change nothing.
+		if _, err := s.credStore().Get(r.Context(), sub); err != nil {
+			if errors.Is(err, store.ErrNoAccount) {
+				credentialNeeded(w)
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "the mail connector could not read this holder's mailbox record: "+err.Error())
 			return
 		}
 		if err := s.authorise(r, sub, need); err != nil {
@@ -252,19 +290,10 @@ func (s *Server) tool(m *http.ServeMux, path string, need grant.Permission, h ha
 		if r.Body != nil {
 			body, _ = readLimited(r, 1<<20)
 		}
-		s.mu.Lock()
-		haveStore := s.store != nil
-		s.mu.Unlock()
-		if !haveStore {
-			writeErr(w, http.StatusServiceUnavailable, "this deployment has no credential store yet")
-			return
-		}
 		drv, err := s.driverFor(r.Context(), sub)
 		if err != nil {
 			if errors.Is(err, store.ErrNoAccount) {
-				writeErr(w, http.StatusPreconditionFailed,
-					"the user has not connected a mailbox yet, so there is nothing to read. "+
-						connectAdvice(r)+" Once it is connected, the access they approved applies to it.")
+				credentialNeeded(w) // forgotten between the check above and here
 				return
 			}
 			writeErr(w, http.StatusBadGateway, "the mailbox is not reachable: "+err.Error())
@@ -272,6 +301,12 @@ func (s *Server) tool(m *http.ServeMux, path string, need grant.Permission, h ha
 		}
 		out, err := h(r.Context(), sub, drv, body)
 		if err != nil {
+			if errors.Is(err, store.ErrNoAccount) {
+				// The change feed opens its own connection inside the handler,
+				// and answers the same way as every other tool.
+				credentialNeeded(w)
+				return
+			}
 			status := http.StatusBadGateway
 			switch {
 			case errors.Is(err, mail.ErrNotFound):
@@ -508,11 +543,7 @@ func (s *Server) changes(ctx context.Context, sub string, _ mail.Driver, body js
 }
 
 func (s *Server) account(ctx context.Context, sub string, _ mail.Driver, _ json.RawMessage) (any, error) {
-	cs := s.credStore()
-	if cs == nil {
-		return nil, errNotConfigured
-	}
-	a, err := cs.Get(ctx, sub)
+	a, err := s.credStore().Get(ctx, sub)
 	if err != nil {
 		return nil, err
 	}

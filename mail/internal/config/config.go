@@ -4,13 +4,15 @@
 // Package config holds the deployment settings an owner supplies once.
 //
 // Not baked into the image, because the same image serves dev and production
-// and the peer it trusts differs between them. Not read from the environment
-// either: the platform's configure-then-freeze path commits a hash of what was
-// set into the RA-TLS leaf, so what this service was told is part of what it
-// can be checked against. An environment variable is invisible to that.
+// and the identity provider it trusts differs between them. Not read from the
+// environment either: the platform's configure-then-freeze path commits a hash
+// of what was set into the RA-TLS leaf, so what this service was told is part
+// of what it can be checked against. An environment variable is invisible to
+// that.
 //
-// Everything here names a PEER. Nothing here is a secret: holder credentials
-// never pass through this path.
+// Nothing here is a secret, and nothing here names a storage peer: this
+// service keeps no holder data at rest, so there is no peer to name. What is
+// left is the root of holder identity.
 package config
 
 import (
@@ -23,19 +25,6 @@ import (
 )
 
 type Config struct {
-	// DriveHost is the resource service this connector keeps credentials in.
-	DriveHost string `json:"drive_host"`
-
-	// DriveAppID pins WHO that service is. Without it the attested dial would
-	// accept any enclave answering the name, so it is required rather than
-	// optional: a connector that cannot name its peer should not start.
-	DriveAppID string `json:"drive_app_id"`
-
-	// DriveDigest optionally pins WHAT it runs. Left empty, any build of the
-	// pinned app is accepted, which is usually right: an ordinary Drive
-	// release should not take every mailbox offline.
-	DriveDigest string `json:"drive_digest,omitempty"`
-
 	// IdpIssuer is whose tokens this service will accept as proof of WHICH
 	// PERSON is calling, when the wallet dials it directly to mint a
 	// capability. It belongs in the configuration rather than in the code
@@ -50,15 +39,6 @@ type Config struct {
 }
 
 func (c Config) Validate() error {
-	if strings.TrimSpace(c.DriveHost) == "" {
-		return errors.New("drive_host is required: the resource service is named, never guessed")
-	}
-	if normaliseAppID(c.DriveAppID) == "" {
-		return errors.New("drive_app_id must be a 32-character app id: without it the attested dial would trust any enclave that answers the name")
-	}
-	if d := strings.TrimSpace(c.DriveDigest); d != "" && len(d) != 64 {
-		return fmt.Errorf("drive_digest must be a 64-character sha256, got %d characters", len(d))
-	}
 	// An issuer reached over anything but https would let whoever answers that
 	// name decide who the holder is.
 	if iss := strings.TrimSpace(c.IdpIssuer); iss != "" && !strings.HasPrefix(iss, "https://") {
@@ -71,14 +51,11 @@ func (c Config) Validate() error {
 //
 // The identity-provider fields are DEFAULTED here rather than at the point of
 // use, so that what is stored, what is served from GET /configure and what is
-// hashed into the certificate are the same three strings. A default applied
+// hashed into the certificate are the same two strings. A default applied
 // later would mean the certificate attested an empty field while the service
 // trusted a real issuer.
 func (c Config) Normalised() Config {
 	out := Config{
-		DriveHost:   strings.ToLower(strings.TrimSpace(c.DriveHost)),
-		DriveAppID:  normaliseAppID(c.DriveAppID),
-		DriveDigest: strings.ToLower(strings.TrimSpace(c.DriveDigest)),
 		IdpIssuer:   strings.TrimRight(strings.TrimSpace(c.IdpIssuer), "/"),
 		IdpAudience: strings.TrimSpace(c.IdpAudience),
 	}
@@ -98,21 +75,6 @@ const (
 	DefaultIdpAudience = "privasys-platform"
 )
 
-func normaliseAppID(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	s = strings.TrimPrefix(s, "app:")
-	s = strings.ReplaceAll(s, "-", "")
-	if len(s) != 32 {
-		return ""
-	}
-	for _, c := range s {
-		if !strings.ContainsRune("0123456789abcdef", c) {
-			return ""
-		}
-	}
-	return s
-}
-
 // Load reads the stored config. A missing file is not an error: it is the
 // ordinary state of an app that has been deployed and not yet configured, and
 // the platform holds every other endpoint at 503 until it has been.
@@ -129,8 +91,8 @@ func Load(path string) (Config, bool, error) {
 		return Config{}, false, fmt.Errorf("stored configuration is unreadable: %w", err)
 	}
 	if err := c.Validate(); err != nil {
-		// Refuse rather than run on half of it. A connector pointing at an
-		// unpinned peer is worse than one that will not start.
+		// Refuse rather than run on half of it. A connector trusting an issuer
+		// nobody can verify is worse than one that will not start.
 		return Config{}, false, fmt.Errorf("stored configuration is invalid: %w", err)
 	}
 	return c.Normalised(), true, nil

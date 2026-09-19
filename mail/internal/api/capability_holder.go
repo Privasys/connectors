@@ -1,3 +1,6 @@
+// Copyright (c) Privasys. All rights reserved.
+// Licensed under the GNU Affero General Public License v3.0.
+
 package api
 
 import (
@@ -71,10 +74,8 @@ func (s *Server) capabilityHolderRoutes(m *http.ServeMux) {
 		// connected mailbox can still have live capabilities in flight, so its
 		// absence is not an error.
 		mailbox := ""
-		if cs := s.credStore(); cs != nil {
-			if acct, err := cs.Get(r.Context(), sub); err == nil {
-				mailbox = acct.User
-			}
+		if acct, err := s.credStore().Get(r.Context(), sub); err == nil {
+			mailbox = acct.User
 		}
 		now := time.Now()
 		out := make([]capabilityView, 0, len(list))
@@ -109,12 +110,14 @@ func (s *Server) capabilityHolderRoutes(m *http.ServeMux) {
 	})
 }
 
-// dropCredentialIfUnused destroys the holder's sealed mailbox credential once
-// nothing is authorised to use it any more.
+// dropCredentialIfUnused forgets the holder's mailbox credential, and closes
+// the mailbox connections opened with it, once nothing is authorised to use
+// it any more.
 //
 // This is the promise the wallet makes on the holder's behalf when it says the
 // service destroys its copy, and it is why revocation cannot be a local flag in
-// the wallet: only this service can honour it.
+// the wallet: only this service can honour it. The credential lives only in
+// this process's memory, so forgetting it here is the whole of the promise.
 //
 // Conditioned on the LAST capability going, not on any of them. The credential
 // belongs to the holder and serves every app they approved, so destroying it
@@ -122,6 +125,10 @@ func (s *Server) capabilityHolderRoutes(m *http.ServeMux) {
 // did not withdraw. When the last one goes there is nothing left that may use
 // it, and keeping it would mean holding a credential nobody is authorised
 // against.
+//
+// The connections go with it. A pooled IMAP session is the credential in
+// use, and one that outlived the credential would keep reading a mailbox the
+// holder just withdrew until the idle reaper found it.
 func (s *Server) dropCredentialIfUnused(r *http.Request, sub string) {
 	remaining, err := s.grantStore().List(r.Context(), sub)
 	if err != nil {
@@ -134,11 +141,7 @@ func (s *Server) dropCredentialIfUnused(r *http.Request, sub string) {
 			return
 		}
 	}
-	cs := s.credStore()
-	if cs == nil {
-		return
-	}
-	if err := cs.Delete(r.Context(), sub); err != nil {
+	if err := s.credStore().Delete(r.Context(), sub); err != nil {
 		// The capability IS revoked and the app can no longer use it, so this
 		// is not reported to the holder as a failure. It is logged because a
 		// credential that outlives every grant over it is exactly the thing
@@ -146,5 +149,6 @@ func (s *Server) dropCredentialIfUnused(r *http.Request, sub string) {
 		log.Printf("[capabilities] holder %.8s…: last capability revoked but the mailbox credential could not be dropped: %v", sub, err)
 		return
 	}
-	log.Printf("[capabilities] holder %.8s…: last capability revoked, mailbox credential destroyed", sub)
+	s.dropConn(sub)
+	log.Printf("[capabilities] holder %.8s…: last capability revoked, mailbox credential forgotten and its connections closed", sub)
 }
