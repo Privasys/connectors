@@ -6,15 +6,6 @@
 # is what a wallet screen is talking about.
 
 FROM golang:1.26-alpine AS build
-RUN apk add --no-cache git
-
-# The RA-TLS client module declares a non-fetchable path, so it is consumed as
-# a sibling checkout at an exact pin rather than by go get. Pinned, never a
-# branch: the attested leg is the thing that decides whether a credential
-# leaves this service, and it must not change under a rebuild.
-ARG RA_TLS_CLIENTS_REF=a5c458d7601eb88ff4eec357037a9421294d8619
-RUN git clone https://github.com/Privasys/ra-tls-clients /build/ra-tls-clients \
- && git -C /build/ra-tls-clients checkout "${RA_TLS_CLIENTS_REF}"
 WORKDIR /build/mail
 
 # Dependencies first, as their own layer, so a source change does not re-fetch
@@ -37,8 +28,9 @@ RUN go build -mod=readonly -trimpath -ldflags="-s -w" \
 FROM alpine:3.21
 
 # Certificates only. Nothing else: no shell utilities to be borrowed, no
-# package manager left armed. A connector holds a mailbox credential, so the
-# image should contain the least that can still serve.
+# package manager left armed. A connector holds mailbox credentials in its
+# memory while it runs, so the image should contain the least that can still
+# serve.
 RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=build /out/mail-connector /usr/local/bin/mail-connector
@@ -47,10 +39,10 @@ COPY --from=build /out/mail-connector /usr/local/bin/mail-connector
 #
 # The platform mounts the app's encrypted volume at /data owned by root, so a
 # container that drops to an unprivileged uid cannot create the one directory
-# it needs and fails at configure time with a permission error that looks
-# nothing like its cause. Enclave app containers run as uid 0 WITHOUT
-# CAP_SYS_ADMIN and with a masked /proc; the enclave, not the uid, is the
-# tenancy boundary here.
+# it needs (the configuration file; no holder data ever goes there) and fails
+# at configure time with a permission error that looks nothing like its
+# cause. Enclave app containers run as uid 0 WITHOUT CAP_SYS_ADMIN and with a
+# masked /proc; the enclave, not the uid, is the tenancy boundary here.
 #
 # Revisit if the runtime ever hands the volume over with an owner: dropping
 # privilege inside the container would be worth having, it is simply not

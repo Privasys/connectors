@@ -3,10 +3,9 @@ name: Publish
 # Publishes the measured Mail Connector image to GHCR, the way the other
 # platform apps do: GITHUB_TOKEN plus packages:write, no personal token.
 #
-# The image is self-contained. The Dockerfile clones the RA-TLS client at an
-# exact pin from a public source, and the tool catalogue is passed in as a
-# build argument read from privasys.json, so the image that reaches the
-# registry is the one the control plane will learn the catalogue from.
+# The image is self-contained. The tool catalogue is passed in as a build
+# argument read from privasys.json, so the image that reaches the registry is
+# the one the control plane will learn the catalogue from.
 #
 # Deploying to an enclave is a separate step: versions create, stage, promote
 # and deploy through the management service. Promoting takes a human approval
@@ -50,8 +49,8 @@ jobs:
       - id: build
         uses: docker/build-push-action@v7
         with:
-          # The repo root, not mail/: the image needs the sibling RA-TLS
-          # checkout, which a context rooted in mail/ could never contain.
+          # The repo root, not mail/: the Dockerfile copies mail/ by its path
+          # in the repository, the same way build.sh and CI do.
           context: .
           file: mail/Dockerfile
           push: true

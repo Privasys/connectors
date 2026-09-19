@@ -17,6 +17,6 @@ _empty/
 /imap-spike.exe
 mail/imap-spike.exe
 
-# The RA-TLS client is a pinned sibling checkout, cloned by the Dockerfile and
-# by CI and symlinked for local work. It is never committed here.
+# A sibling checkout of the RA-TLS client that earlier builds needed, and a
+# workstation may still have beside the module. It is never committed here.
 /ra-tls-clients

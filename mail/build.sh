@@ -27,9 +27,8 @@ case "$MANIFEST" in
 esac
 
 echo "building $IMAGE:$TAG"
-# The build context is the REPO ROOT, not this directory. The image clones the
-# RA-TLS client as a sibling of the module, which the go.mod replace directive
-# points at, and a context rooted here could never contain it.
+# The build context is the REPO ROOT, not this directory, so the Dockerfile
+# copies `mail/` by its path in the repository and the same file serves CI.
 docker build \
   -f Dockerfile \
   --build-arg "MANIFEST=$MANIFEST" \
