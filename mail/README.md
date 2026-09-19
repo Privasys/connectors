@@ -17,13 +17,18 @@ shape of the code rather than a promise about its behaviour.
 
 ## Where things live
 
-**The connector keeps no durable user state.** The one thing that must survive
-a restart is the credential for the linked mailbox, and even that does not
-live here: it is encrypted under a key sealed to this connector's measurement
-and the ciphertext is written to the holder's own Drive. Two independent
-things must hold for anyone else to use it, and revoking the Drive grant
-strands it, which is what makes the holder's own revoke button the kill
-switch rather than a request someone honours.
+**The connector keeps no durable user state.** Literally: the mailbox
+credential is at rest only on the holder's own device and in use only in the
+memory of this attested process. The holder types it once, on their wallet's
+approval screen; the wallet keeps the answers it sent and sends them again
+the next time this service asks. There is no sealing key, no volume with
+anything of the holder's on it, no storage peer and no second approval to
+obtain before the first. The holder's revoke is honoured here, in the one
+place the credential exists.
+
+**A restart forgets everything**, credentials and capabilities alike. That is
+the price the design accepts. Each holder then gets one request on their
+phone at the next use, and their unattended runs wait until they answer it.
 
 **Mail is never stored.** The provider stays the system of record; bodies live
 in memory for the length of one call. Searching uses the provider's index,
@@ -71,14 +76,13 @@ worthless for "this person approves a capability". If the same header were
 good enough for both, the app that wants access could grant itself access and
 no wallet screen would ever be drawn.
 
-So the **holder-facing** endpoints (linking a mailbox, minting a capability,
-listing and revoking approvals) never read it. A holder is established one of
-exactly two ways:
+So the **holder-facing** endpoints (minting a capability, listing and
+revoking approvals) never read it. A holder is established one of exactly two
+ways:
 
 - **`X-Privasys-Sub`**, which the runtime's session-relay middleware sets from
   a wallet-authenticated sealed session and strips from every inbound request
-  before dispatch. That stripping is what makes it trustworthy, and it is the
-  person sitting in front of the linking page.
+  before dispatch. That stripping is what makes it trustworthy.
 - **A bearer token from the configured identity provider**, verified here
   against its key set. That is the wallet, dialling this connector directly
   over RA-TLS to approve a mailbox, with no relay in between.
@@ -87,26 +91,55 @@ Verification is offline apart from a cached key set, so a mailbox is never
 opened by asking the platform about the person whose mail it is. An
 unverifiable token is treated exactly as no token at all.
 
-Which issuer is trusted is part of the configuration, and part of the hash
+Which issuer is trusted is the whole of the configuration, and it is the hash
 this service publishes into its own certificate. It decides whose approval
-this deployment will honour, which makes it a stronger claim than which
-storage peer it uses: one says who can read a stored credential, the other
-says whose say-so can hand one over.
+this deployment will honour.
+
+## Connecting a mailbox
+
+There is no page to do it on. The wallet reads what this service needs
+(`GET /v1/capabilities/setup`: an address and an app password, the password
+marked secret, nothing to approve first), draws it on the approval screen,
+and sends the answers with the mint (`POST /v1/capabilities`, `setup`). The
+service finds the server from the address, proves the credential by opening
+the mailbox and listing one message, keeps it in memory, and mints the
+capability, all on the one tap. A server that cannot be found is one more
+question (428); a provider that refuses the details is its own error (502),
+shown beside the fields.
+
+The mint's answer carries `capability_id`, `nonce`, `expires_unix` and a
+`service_result` naming the mailbox. It carries nothing for the wallet to keep
+on this service's behalf, because for IMAP there is nothing: the credential is
+what the holder typed, and their device already keeps that.
+
+### When the credential is not in memory
+
+Every tool call, and the change feed, then answer **403** with
+
+```json
+{"error": "…", "credential_needed": true, "needs_holder": true}
+```
+
+The sentence is written for the agent: the mailbox details are on the user's
+device, not here, so ask the user, then call `request_access` for their
+`mail.mailbox` resource **with `ask_again`**. The device's own record may still
+say this service is approved, and only `ask_again` makes it ask afresh; the
+device then sends the details it kept, or asks the holder for them, on the
+approval screen. No retry loop, no page to visit.
 
 ## Endpoints
 
 | Path | Who calls it |
 |---|---|
-| `GET /` | the holder, in a browser: connect or disconnect a mailbox |
-| `GET /v1/link` | the holder: which mailbox is connected |
-| `POST /v1/link` | the holder: connect one, after it has been proved |
-| `DELETE /v1/link` | the holder: disconnect |
+| `GET /` | anyone: what this service is, and that there is no page to connect on |
 | `POST /tools/*` | the attested agent, eleven tools, see `privasys.json` |
 | `GET /api/v1/mcp/tools` | the agent's MCP client: the catalogue |
 | `POST /api/v1/mcp/tools/*` | the same eleven tools, at the path that client calls |
-| `POST /v1/capabilities` | the wallet, as the holder, after approval |
-| `GET /v1/apps` | the holder: what has access |
-| `DELETE /v1/grants/{id}` | the holder: revoke |
+| `GET /v1/capabilities/setup` | the wallet: what the holder must answer |
+| `POST /v1/capabilities` | the wallet, as the holder: connect and mint on one tap |
+| `GET /v1/capabilities` | the wallet: what has access, in the shared shape |
+| `DELETE /v1/capabilities/{id}` | the wallet: revoke; with the last one go the credential and the mailbox connections |
+| `GET /v1/apps`, `DELETE /v1/grants/{id}` | this service's older names for the same list and revoke |
 | `GET /health`, `GET /readiness` | the platform |
 
 The two tool paths are **one closure registered twice**, so the acting-user
@@ -117,8 +150,9 @@ to be relaxed.
 The catalogue is served from the embedded `privasys.json`, which is also the
 label the control plane reads, so the descriptions a model sees are the ones
 that were reviewed and a tool cannot be described two ways. `configure` is
-filtered out of it: it points this deployment at the service holding every
-holder's credential, and an agent that could call it could move them.
+filtered out of it: it names the identity provider whose word this deployment
+takes on who a holder is, and an agent that could call it could decide whose
+approvals count.
 
 **The catalogue is the one request served without an acting user**, because
 the agent's client pulls it on a startup timer before anyone is acting. That
@@ -140,29 +174,33 @@ serve.
 
 ## Running it locally
 
-The production credential store is not built yet, so a local run needs two
-deliberate opt-ins, both of which say what they are giving up.
+There is no store to choose and nothing on disk but the configuration. A
+local run needs one deliberate opt-out, which says what it is giving up.
 
 ```sh
-export MAIL_STORE=local                   # secrets on THIS host, not the holder's Drive
-export MAIL_STORE_DIR=./.mail-store
-export MAIL_STORE_KEY=$(openssl rand -hex 32)
 export MAIL_ALLOW_UNGRANTED=yes-i-am-developing   # no capability checks
+export MAIL_CONFIG=./config.json                  # where configure writes
 export PORT=8123
-
-# Link a mailbox. The secret comes from a FILE outside the tree: a password in
-# argv is visible to every process on the machine and lands in shell history.
-./mail-connector -link user-1 -creds /path/to/creds.json
-
 ./mail-connector
 ```
 
-```json
-{"host":"imap.gmail.com:993","user":"you@example.com","password":"…",
- "own_domains":["example.com"]}
+Configure it (an empty body takes the platform defaults), then connect a
+mailbox the way the wallet does, as a holder the relay would have named. The
+secret goes in the request body, never in argv, where every process on the
+machine can read it and the shell keeps it.
+
+```sh
+curl -s -X POST localhost:8123/configure -d '{}'
+EXP=$(( $(date +%s) + 86400 ))          # at most 180 days out
+curl -s -X POST localhost:8123/v1/capabilities -H 'X-Privasys-Sub: user-1' -d @- <<JSON
+{"nonce":"n","subject_app_id":"00000000000000000000000000000001","kind":"mail.mailbox",
+ "permissions":["read"],"expires_unix":$EXP,
+ "setup":{"user":"you@example.com","password":"…"}}
+JSON
 ```
 
 For Gmail the password must be an App Password, with 2-Step Verification on.
+Stop the process and it is gone.
 
 ## Known ground
 
@@ -181,47 +219,22 @@ from what. The three that matter most:
 
 ## Where the credential lives, precisely
 
-Two independent things must hold before anyone can use a linked mailbox. The
-**ciphertext** sits in the holder's own Drive folder, which they can revoke
-this app's access to. The **sealing key** sits on this app's encrypted volume
-and only this measurement can read it. Neither alone is enough, and the holder
-controls the first, which is what makes their revoke a kill switch rather than
-a request someone honours. It also means a redeployed connector leaks nothing:
-the ciphertext it left behind is inert.
+In two places and no third. On the holder's device, kept by their wallet as
+the answers it gave on the approval screen. And in this process's memory,
+from the moment the wallet sends them until the last capability over the
+mailbox is revoked, the process stops, or the deployment is pointed at a
+different identity provider (what was approved under the old one is
+forgotten). Nothing is written to the volume, nothing goes to a storage
+service, and nothing is encrypted for later, because there is no later.
 
-The proof presented to Drive is minted per request and never stored. The
-binding key never leaves the runtime; the connector asks the manager to sign
-each proof, so a compromised connector can only act while it is still the app
-the manager thinks it is.
+A redeployed or wiped connector therefore leaves nothing behind at all. What
+it costs is one tap: the wallet answers the next `setup` question with the
+details it kept, and the credential and the capability come back together.
 
-**Operational rule:** the sealing key goes under the upgrade gate. A release
-that rotates it is a re-link event for every holder and must be planned as
-one rather than discovered.
-
-## The attested leg
-
-The call to Drive goes over RA-TLS, not ordinary TLS. Two reasons, and the
-second is the real one: the enclave gateway refuses plaintext app traffic so
-the call would not arrive, and server-auth TLS proves only that something
-answered the name, on a leg that carries a holder's mailbox credential.
-
-The peer's quote is bound to that handshake, so a replayed certificate cannot
-pass. Its app id is then checked against `MAIL_DRIVE_APP_ID`, and its build
-against `MAIL_DRIVE_DIGEST` when one is pinned. All of it happens before the
-connection reaches the pool, so no byte of a credential is written to a
-channel whose far end has not been checked.
-
-Identity is pinned by app id rather than by measurement, so an ordinary Drive
-release does not break the leg. The digest pin is for when a specific build
-has been admitted, and a peer that presents no digest does not satisfy one.
-
-This transport dials one host and refuses every other, which is narrower than
-it needs to be today and stops a control plane that starts pointing this
-connector elsewhere from moving its traffic.
-
-The RA-TLS client module declares a non-fetchable path, so it is consumed as a
-sibling checkout at an exact pin: cloned by the Dockerfile and by CI from the
-same ref, symlinked for local work, never committed here.
+An OAuth refresh token, when the Graph and Gmail drivers land, is the one
+thing this service would need the wallet to keep for it. The mint has a place
+for that, unused today, so the shape of the deal does not change when it
+arrives.
 
 ## Not built yet
 
