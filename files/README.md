@@ -4,6 +4,8 @@ Reads one file store on behalf of one attested agent, under a capability the
 holder approved on their own device: OneDrive and SharePoint through
 Microsoft Graph, or Google Drive. It writes into one folder of its own there
 and nowhere else. **It never deletes, moves, renames or shares anything.**
+You type your address; the connector finds who hosts it and asks you to sign
+in there, at Microsoft or at Google, which are the two places it can reach.
 
 ## What it does, and what it deliberately does not
 
@@ -75,32 +77,50 @@ and their unattended runs wait until it has.
 
 ## Connecting an account
 
-There is no page to do it on, and nothing is ever typed but the choice of
-provider. The wallet reads what this service needs
-(`GET /v1/capabilities/setup`), draws it on the approval screen, and sends the
-answers with the mint (`POST /v1/capabilities`, `setup`). The first question is
-the provider alone, **Microsoft** or **Google**, because what comes next
-depends on it; an account address may be given beside it and is used only to
-check that the sign-in matched.
+There is no page to do it on, and nothing is ever typed but your address.
+The wallet reads what this service needs (`GET /v1/capabilities/setup`),
+draws it on the approval screen, and sends the answers with the mint
+(`POST /v1/capabilities`, `setup`). **The first question is the address
+alone**, because the address decides everything that follows: who hosts the
+account (the sdk's `provider`: Google's and Microsoft's own domains by name,
+then the domain's MX records for a custom domain at Google Workspace or
+Microsoft 365, then "somewhere else"), and so which sign-in, and whether the
+account can be connected here at all. The holder is never asked to pick a
+provider the domain already names.
 
-The second step is one button for that provider: **Continue with Microsoft**
-or **Continue with Google**. The wallet opens `https://<this host>/v1/oauth/start`
-in an authentication session; this service sends the browser to the provider
-with PKCE and the scopes below; the provider sends it back to
+The second step is one button for the provider the address names:
+**Continue with Microsoft** for `outlook.com`, `hotmail.com`, `live.com`,
+their national variants and any domain whose MX is Microsoft 365;
+**Continue with Google** for `gmail.com`, `googlemail.com` and any domain
+whose mail is at Google. The wallet opens
+`https://<this host>/v1/oauth/start?kind=files.cloud&provider=…` in an
+authentication session; this service sends the browser to the provider with
+PKCE and the scopes below; the provider sends it back to
 `https://<this host>/v1/oauth/callback`; this service exchanges the code with
-its sealed client secret, keeps the tokens in memory under a one-time grant
-code, and sends the browser back to the wallet's own scheme with that code and
-nothing else. The wallet puts the code in the mint's `setup`; the service
-redeems it once, proves the tokens with the provider's own probe (Graph:
-`/me` and `/me/drive`; Drive: `about`), and answers the mint with
-`"keep": {"refresh_token": "..."}`.
+its sealed client secret, reads the signed-in address with the provider's own
+probe (Graph: `/me` and `/me/drive`; Drive: `about`), keeps the tokens in
+memory under a one-time grant code, and sends the browser back to the wallet's
+own scheme with that code and nothing else. The wallet puts the code in the
+mint's `setup`; the service redeems it once, **refuses a sign-in for any
+address but the one typed**, so the address is bound to the account rather
+than decorative, and answers the mint with
+`"keep": {"refresh_token": "…", "provider": "…"}`.
+
+**An address at neither** (iCloud, Fastmail, a company's own mail server, or
+a domain the resolver cannot read) gets a 428 whose message says this
+address is not at a provider this connector can reach, naming the two, with
+nothing to fill. **A provider with no client configured here** is said just
+as plainly: nothing to fill, and a sentence naming the missing client.
 
 That refresh token is the one thing this service asks the wallet to keep for
-it. The holder never typed it, and without it the credential would not
-outlive one access token. On a later mint the wallet sends it back as
-`setup.kept.refresh_token`, the service mints an access token from it, proves
-it, and connects with no browser. A kept token the provider no longer honours
-is a 502 with a sentence, and the sign-in button again.
+it, with the word for who issued it. The holder never typed it, and without
+it the credential would not outlive one access token. On a later mint the
+wallet sends it back as `setup.kept.refresh_token` beside the typed address,
+the service mints an access token from it, proves it, checks the address,
+and connects with no browser; `setup.kept.provider` says which sign-in it
+was, so a resolver that cannot be reached at that moment never refuses a
+kept token. A kept token the provider no longer honours is a 502 with a
+sentence, and the sign-in button again.
 
 Both providers sign in through the same two routes; the start URL names the
 provider and the callback is matched to the sign-in that started it. Microsoft's
@@ -224,7 +244,8 @@ export PORT=8123
 ```
 
 Configure it with at least one client, then connect an account the way the
-wallet does: read the setup, open the start URL for the provider in a browser
+wallet does: read the setup, answer the address, open the start URL of the
+button it draws in a browser
 with a wallet-shaped `redirect_uri` and a nonce, take the grant code from the
 redirect the callback answers with, and mint with it as a holder the relay
 would have named. The grant code is single use and lives ten minutes.
@@ -236,7 +257,7 @@ EXP=$(( $(date +%s) + 86400 ))
 curl -s -X POST localhost:8123/v1/capabilities -H 'X-Privasys-Sub: user-1' -d @- <<JSON
 {"nonce":"n","subject_app_id":"00000000000000000000000000000001","kind":"files.cloud",
  "permissions":["read","write"],"expires_unix":$EXP,
- "setup":{"provider":"Google","grant":"<the grant code>"}}
+ "setup":{"user":"you@gmail.com","grant":"<the grant code>"}}
 JSON
 ```
 
@@ -248,7 +269,10 @@ redirect, the delta feed, folder creation and the upload; a fake Drive with
 My Drive and a shared drive, the query shapes the driver writes, export,
 `changes.list` and the multipart upload. The sign-in is exercised end to end
 against fake authorisation servers for both providers, including the
-kept-token path after a restart and Microsoft's refresh with the scope named.
+kept-token path after a restart, Microsoft's refresh with the scope named,
+and the refusal of a sign-in for another address. The branching by address
+is tested on the providers' own domains, on custom domains through a fake
+MX, on an address at neither, and with no client configured.
 The extractors are tested on fixtures built in the tests and fuzzed.
 
 **It has not been run against a real tenant or a real Google account.** No

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,7 +22,23 @@ import (
 	"github.com/Privasys/connectors/sdk/caller"
 	"github.com/Privasys/connectors/sdk/grant"
 	"github.com/Privasys/connectors/sdk/holder"
+	"github.com/Privasys/connectors/sdk/provider"
 )
+
+// fakeMX is the DNS the tests see: example.org at Microsoft 365,
+// workspace.example at Google Workspace, self.example hosted by itself, and
+// every other domain unknown.
+func fakeMX(_ context.Context, domain string) ([]*net.MX, error) {
+	switch domain {
+	case "example.org":
+		return []*net.MX{{Host: "example-org.mail.protection.outlook.com."}}, nil
+	case "workspace.example":
+		return []*net.MX{{Host: "aspmx.l.google.com."}}, nil
+	case "self.example":
+		return []*net.MX{{Host: "mail.self.example."}}, nil
+	}
+	return nil, errors.New("no such domain")
+}
 
 const testApp = "590ebdc31b63401fbbb822d5f3886c5e"
 
@@ -149,6 +166,7 @@ type rig struct {
 func newRig(t *testing.T, requireGrant bool) *rig {
 	t.Helper()
 	r := &rig{s: New(store.NewMemory(), grant.NewMemory(), requireGrant), identity: "me@example.org"}
+	r.s.who = &provider.Resolver{LookupMX: fakeMX}
 	r.s.open = func(ctx context.Context, provider string, tok cloud.TokenFunc) (cloud.Driver, error) {
 		bearer, err := tok(ctx)
 		if err != nil {

@@ -40,6 +40,7 @@ import (
 	"github.com/Privasys/connectors/sdk/grant"
 	"github.com/Privasys/connectors/sdk/holder"
 	"github.com/Privasys/connectors/sdk/oauth"
+	"github.com/Privasys/connectors/sdk/provider"
 	"github.com/Privasys/connectors/sdk/redact"
 	"github.com/Privasys/connectors/sdk/web"
 )
@@ -82,8 +83,9 @@ type Server struct {
 	svc   *connector.Service[store.Account]
 	flows *oauth.Multi
 
-	// The seams a test replaces: how a driver is opened for a provider, and
-	// where the providers' APIs are.
+	// The seams a test replaces: who hosts an address, how a driver is
+	// opened for a provider, and where the providers' APIs are.
+	who               *provider.Resolver
 	open              func(ctx context.Context, provider string, tok cloud.TokenFunc) (cloud.Driver, error)
 	graphBase         string
 	googleBase        string
@@ -109,6 +111,7 @@ type conn struct {
 func New(s store.Store, g grant.Store, requireGrant bool) *Server {
 	srv := &Server{
 		conns:             map[string]*conn{},
+		who:               provider.Default(),
 		http:              &http.Client{Timeout: 60 * time.Second},
 		microsoftTokenURL: microsoft.TokenURL,
 	}
@@ -124,7 +127,8 @@ func New(s store.Store, g grant.Store, requireGrant bool) *Server {
 		Name:     "Privasys Files Connector",
 		Note: "Reads one file store (OneDrive and SharePoint, or Google Drive) for one attested agent, under a capability the holder approved on their device, " +
 			"and writes only into its own folder there. It never deletes, moves, renames or shares anything. " +
-			"There is no page to connect an account on: the holder's wallet holds the browser for the sign-in, " +
+			"There is no page to connect an account on: the holder's wallet asks for the address on the approval screen, " +
+			"tells from it whether the files are at Microsoft or at Google, and holds the browser for the sign-in there; " +
 			"and this service keeps the credential only in memory.",
 		Credentials:  s,
 		Grants:       g,

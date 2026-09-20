@@ -5,18 +5,26 @@ package api
 
 // Connecting an account happens in one place: the wallet's approval screen.
 //
-// The wallet asks which provider first, alone (428), because what comes next
-// depends on it. The second step is one button for that provider: the wallet
-// opens this service's /v1/oauth/start in an authentication session, the
-// holder signs in with Microsoft or Google in their browser, and only a
-// one-time grant code comes back to the wallet, which sends it with the
-// mint. Nothing is ever typed but the provider choice, and optionally the
-// address, which is only used to check that the sign-in was for the account
-// the holder meant.
+// The wallet asks for the address first, alone (428), because the address
+// decides everything: who hosts the account, and so which sign-in, and
+// whether the account can be connected here at all. A Google address
+// (Google's own domains, or a domain whose MX is Google) gets one button,
+// Continue with Google; a Microsoft address gets Continue with Microsoft;
+// an address hosted anywhere else is told, in a sentence with nothing to
+// fill, that this connector reaches only those two. A holder is never asked
+// to pick a provider the domain already names, and a provider whose
+// sign-in client is not configured on this deployment is said plainly.
+//
+// For the sign-in the wallet opens this service's /v1/oauth/start in an
+// authentication session, the holder signs in with Microsoft or Google in
+// their browser, and only a one-time grant code comes back to the wallet,
+// which sends it with the mint. The mint refuses a sign-in for any address
+// but the one typed, so the address is bound to the account, not
+// decorative.
 //
 // A refresh token is the one thing this service asks the wallet to keep for
-// it (`keep`), and a later mint carries it back as
-// `setup.kept.refresh_token` so nobody has to sign in again after a restart.
+// it (`keep`), with the provider it is for, and a later mint carries both
+// back as `setup.kept` so nobody has to sign in again after a restart.
 
 import (
 	"context"
@@ -33,163 +41,207 @@ import (
 	"github.com/Privasys/connectors/files/internal/store"
 	"github.com/Privasys/connectors/sdk/connector"
 	"github.com/Privasys/connectors/sdk/oauth"
+	"github.com/Privasys/connectors/sdk/provider"
 )
 
 type setup struct{ s *Server }
-
-// The provider choice as the wallet shows it, and the slug it becomes.
-var providerNames = map[string]string{"microsoft": cloud.ProviderMicrosoft, "google": cloud.ProviderGoogle}
-
-func providerOf(answers map[string]any) string {
-	v, _ := answers["provider"].(string)
-	return providerNames[strings.ToLower(strings.TrimSpace(v))]
-}
 
 func str(answers map[string]any, k string) string {
 	v, _ := answers[k].(string)
 	return strings.TrimSpace(v)
 }
 
-// providerElicit is the first step: which provider, alone, so the second
-// step can be drawn for it. The address is optional and nothing depends on
-// it but a check that the sign-in matched.
-func providerElicit() map[string]any {
+// slugOf is the sign-in flow a provider runs under; "" for one this
+// connector cannot reach.
+func slugOf(who provider.Provider) string {
+	switch who {
+	case provider.Google:
+		return cloud.ProviderGoogle
+	case provider.Microsoft:
+		return cloud.ProviderMicrosoft
+	}
+	return ""
+}
+
+// addressElicit is the first step: the address alone, so the second step
+// can be drawn for it.
+func addressElicit() map[string]any {
 	return connector.Elicit(
-		"Connect your files. Choose where they are; you then sign in with that provider in your browser, and nothing is typed here. The service stores nothing: the sign-in is kept by this device.",
+		"Connect your files. Enter the email address of the account; the connector finds who hosts it (Microsoft for OneDrive and SharePoint, Google for Google Drive) and asks you to sign in there in your browser. Nothing else is typed here, and the service stores nothing: the sign-in is kept by this device.",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"provider": map[string]any{
-					"type": "string", "title": "Provider",
-					"enum": []string{"Microsoft", "Google"}, "enumNames": []string{"Microsoft (OneDrive, SharePoint)", "Google Drive"},
-				},
-				"user": map[string]any{"type": "string", "title": "Account email (optional)", "format": "email"},
+				"user": map[string]any{"type": "string", "title": "Email address", "format": "email"},
 			},
-			"required": []string{"provider"},
+			"required": []string{"user"},
 		})
 }
 
-// signInElicit is the second step: one button for the provider. The wallet
-// draws it from x-privasys-oauth and fills `grant` with the code the sign-in
-// sent back.
-func (p *setup) signInElicit(r *http.Request, provider, user string) map[string]any {
-	label := "Microsoft"
-	if provider == cloud.ProviderGoogle {
-		label = "Google"
-	}
-	props := map[string]any{
-		"provider": map[string]any{"type": "string", "title": "Provider", "default": label, "enum": []string{label}},
-		"grant":    p.s.flows.SchemaProperty(r, provider),
-	}
-	if user != "" {
-		props["user"] = map[string]any{"type": "string", "title": "Account email", "format": "email", "default": user}
-	}
+// signInElicit is the second step: one button for the provider the address
+// names. The wallet draws it from x-privasys-oauth and fills `grant` with
+// the code the sign-in sent back.
+func (p *setup) signInElicit(r *http.Request, who provider.Provider, user string) map[string]any {
 	return connector.Elicit(
-		"Sign in with "+label+" to connect your files; the sign-in happens in your browser and only a one-time code comes back to this device.",
-		map[string]any{"type": "object", "properties": props, "required": []string{"provider", "grant"}})
+		user+" is a "+who.Name()+" account. Sign in with "+who.Name()+" to connect its files; the sign-in happens in your browser and only a one-time code comes back to this device.",
+		map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"user":  map[string]any{"type": "string", "title": "Email address", "format": "email", "default": user},
+				"grant": p.s.flows.SchemaProperty(r, slugOf(who)),
+			},
+			"required": []string{"user", "grant"},
+		})
+}
+
+// unreachableElicit is the honest answer for an address at a provider this
+// connector cannot reach: a sentence, and nothing to fill.
+func unreachableElicit(user string) map[string]any {
+	return connector.Elicit(
+		user+" is not at a provider this connector can reach. It connects files at Microsoft (OneDrive, SharePoint) and at Google (Google Drive), and reads who hosts an address from its domain; an address at either that is not recognised is worth a word to whoever runs this deployment.",
+		map[string]any{"type": "object", "properties": map[string]any{}})
+}
+
+// notConfiguredElicit is the honest answer for a provider this deployment
+// has no sign-in client for: a sentence, and nothing to fill.
+func notConfiguredElicit(who provider.Provider, user string) map[string]any {
+	return connector.Elicit(
+		user+" is a "+who.Name()+" account, and this deployment of the files connector has no "+who.Name()+" sign-in configured, so it cannot connect it. Ask whoever runs it to configure a "+who.Name()+" client.",
+		map[string]any{"type": "object", "properties": map[string]any{}})
+}
+
+// hostOf says who hosts the typed address. A kept sign-in names its
+// provider too (`kept.provider`), and that word wins: the sign-in already
+// proved it, and a resolver that cannot be reached at that moment must not
+// refuse a kept token.
+func (p *setup) hostOf(ctx context.Context, answers map[string]any, user string) provider.Provider {
+	if kept, ok := answers["kept"].(map[string]any); ok {
+		switch str(kept, "provider") {
+		case cloud.ProviderGoogle:
+			return provider.Google
+		case cloud.ProviderMicrosoft:
+			return provider.Microsoft
+		}
+	}
+	return p.s.who.Of(ctx, user)
 }
 
 // Question is the step the answers so far call for.
 func (p *setup) Question(r *http.Request, answers map[string]any) map[string]any {
-	provider := providerOf(answers)
-	if provider == "" {
-		return providerElicit()
+	user := strings.ToLower(str(answers, "user"))
+	if provider.Domain(user) == "" {
+		return addressElicit()
 	}
-	return p.signInElicit(r, provider, str(answers, "user"))
+	who := p.hostOf(r.Context(), answers, user)
+	slug := slugOf(who)
+	if slug == "" {
+		return unreachableElicit(user)
+	}
+	if !p.s.flows.Flow(slug).Configured() {
+		return notConfiguredElicit(who, user)
+	}
+	return p.signInElicit(r, who, user)
 }
 
 // Connect proves the answers and keeps the credential.
 func (p *setup) Connect(r *http.Request, sub string, answers map[string]any) (map[string]any, error) {
-	provider := providerOf(answers)
-	if provider == "" {
-		return nil, &connector.ElicitError{Elicit: providerElicit()}
-	}
 	user := strings.ToLower(str(answers, "user"))
-	if !p.s.flows.Flow(provider).Configured() {
-		return nil, connector.Errorf(http.StatusServiceUnavailable,
-			"this deployment has no %s OAuth client configured, so a %s account cannot be connected here", providerLabel(provider), providerLabel(provider))
+	if provider.Domain(user) == "" {
+		return nil, &connector.ElicitError{Elicit: addressElicit()}
+	}
+	who := p.hostOf(r.Context(), answers, user)
+	slug := slugOf(who)
+	if slug == "" {
+		return nil, &connector.ElicitError{Elicit: unreachableElicit(user)}
+	}
+	if !p.s.flows.Flow(slug).Configured() {
+		return nil, &connector.ElicitError{Elicit: notConfiguredElicit(who, user)}
 	}
 	if kept, ok := answers["kept"].(map[string]any); ok {
 		if rt := str(kept, "refresh_token"); rt != "" {
-			return p.connectKept(r.Context(), sub, provider, user, rt)
+			return p.connectKept(r.Context(), sub, who, user, rt)
 		}
 	}
-	return p.connectGrant(r, sub, provider, user, str(answers, "grant"))
+	return p.connectGrant(r, sub, who, user, str(answers, "grant"))
 }
 
-func providerLabel(provider string) string {
-	if provider == cloud.ProviderGoogle {
-		return "Google"
-	}
-	return "Microsoft"
-}
-
-// connectGrant redeems the grant code the wallet was sent back with, proves
-// the tokens against the provider, keeps them, and hands the wallet the
-// refresh token to keep.
-func (p *setup) connectGrant(r *http.Request, sub, provider, user, grant string) (map[string]any, error) {
+// connectGrant redeems the grant code the wallet was sent back with, checks
+// the sign-in was for the address typed, proves the tokens against the
+// provider, keeps them, and hands the wallet the refresh token to keep.
+func (p *setup) connectGrant(r *http.Request, sub string, who provider.Provider, user, grant string) (map[string]any, error) {
+	slug := slugOf(who)
 	if grant == "" {
-		return nil, &connector.ElicitError{Elicit: p.signInElicit(r, provider, user)}
+		return nil, &connector.ElicitError{Elicit: p.signInElicit(r, who, user)}
 	}
-	issued, ok := p.s.flows.Flow(provider).Redeem(grant)
+	issued, ok := p.s.flows.Flow(slug).Redeem(grant)
 	if !ok {
 		// Unknown, used or expired: one more sign-in, said plainly.
-		q := p.signInElicit(r, provider, user)
-		q["message"] = "The sign-in code is unknown, already used or expired. Sign in with " + providerLabel(provider) + " again."
+		q := p.signInElicit(r, who, user)
+		q["message"] = "The sign-in code is unknown, already used or expired. Sign in with " + who.Name() + " again."
 		return nil, &connector.ElicitError{Elicit: q}
 	}
-	if user != "" && issued.Identity != "" && !strings.EqualFold(issued.Identity, user) {
+	if issued.Identity != "" && !strings.EqualFold(issued.Identity, user) {
 		return nil, connector.Errorf(http.StatusBadRequest,
-			"the %s sign-in was for %s, not %s; sign in with the account you meant", providerLabel(provider), issued.Identity, user)
+			"the %s sign-in was for %s, not %s; enter the address you sign in with", who.Name(), issued.Identity, user)
 	}
 	if issued.RefreshToken == "" {
 		return nil, connector.Errorf(http.StatusBadGateway,
-			"%s issued no refresh token for this sign-in, so the connection would not outlive an hour; remove this app from the account's connected apps and sign in again", providerLabel(provider))
+			"%s issued no refresh token for this sign-in, so the connection would not outlive an hour; remove this app from the account's connected apps and sign in again", who.Name())
 	}
-	return p.keep(r.Context(), sub, provider, issued.Tokens)
+	return p.keep(r.Context(), sub, who, user, issued.Tokens)
 }
 
 // connectKept uses the refresh token the wallet kept instead of a browser:
 // mint an access token, prove it, keep it.
-func (p *setup) connectKept(ctx context.Context, sub, provider, user, refreshToken string) (map[string]any, error) {
-	t, err := p.s.refresh(ctx, provider, refreshToken)
+func (p *setup) connectKept(ctx context.Context, sub string, who provider.Provider, user, refreshToken string) (map[string]any, error) {
+	t, err := p.s.refresh(ctx, slugOf(who), refreshToken)
 	if err != nil {
 		if errors.Is(err, oauth.ErrRefused) {
-			return nil, connector.Errorf(http.StatusBadGateway, "%s no longer accepts the saved sign-in; sign in again", providerLabel(provider))
+			return nil, connector.Errorf(http.StatusBadGateway, "%s no longer accepts the saved sign-in; sign in again", who.Name())
 		}
-		return nil, connector.Errorf(http.StatusBadGateway, "%s could not be reached to renew the sign-in: %v", providerLabel(provider), err)
+		return nil, connector.Errorf(http.StatusBadGateway, "%s could not be reached to renew the sign-in: %v", who.Name(), err)
 	}
-	return p.keep(ctx, sub, provider, t)
+	return p.keep(ctx, sub, who, user, t)
 }
 
 // keep proves the tokens with the provider's probe (who the account is, and
-// that it has a drive) and keeps the credential. What goes back to the
-// wallet is the refresh token, and only that: the access token is minutes
-// from expiring and this service mints the next one itself.
-func (p *setup) keep(ctx context.Context, sub, provider string, t oauth.Tokens) (map[string]any, error) {
-	drv, err := p.s.open(ctx, provider, func(context.Context) (string, error) { return t.AccessToken, nil })
+// that it has a drive), checks that account is the address typed, and keeps
+// the credential. What goes back to the wallet is the refresh token and the
+// provider, and only that: the access token is minutes from expiring and
+// this service mints the next one itself.
+func (p *setup) keep(ctx context.Context, sub string, who provider.Provider, user string, t oauth.Tokens) (map[string]any, error) {
+	slug := slugOf(who)
+	drv, err := p.s.open(ctx, slug, func(context.Context) (string, error) { return t.AccessToken, nil })
 	if err != nil {
-		return nil, connector.Errorf(http.StatusBadGateway, "signed in, but %s would not open the files: %v", providerLabel(provider), err)
+		return nil, connector.Errorf(http.StatusBadGateway, "signed in, but %s would not open the files: %v", who.Name(), err)
 	}
 	live, err := drv.Account(ctx)
 	_ = drv.Close()
 	if err != nil {
-		return nil, connector.Errorf(http.StatusBadGateway, "signed in, but %s would not say whose files these are: %v", providerLabel(provider), err)
+		return nil, connector.Errorf(http.StatusBadGateway, "signed in, but %s would not say whose files these are: %v", who.Name(), err)
+	}
+	if live.User != "" && !strings.EqualFold(live.User, user) {
+		// The kept path has no callback probe, so the address is checked
+		// here too, against what the provider says.
+		return nil, connector.Errorf(http.StatusBadRequest,
+			"the %s sign-in was for %s, not %s; enter the address you sign in with", who.Name(), live.User, user)
 	}
 	acct := store.Account{
-		Provider: provider, User: live.User, Name: live.Name, DriveID: live.DriveID, DriveType: live.DriveType, LinkedAt: time.Now(),
+		Provider: slug, User: live.User, Name: live.Name, DriveID: live.DriveID, DriveType: live.DriveType, LinkedAt: time.Now(),
 		RefreshToken: t.RefreshToken, AccessToken: t.AccessToken, Expiry: t.Expiry,
+	}
+	if acct.User == "" {
+		acct.User = user
 	}
 	if err := p.s.credStore().Put(ctx, sub, acct); err != nil {
 		return nil, connector.Errorf(http.StatusInternalServerError, "%v", err)
 	}
 	p.s.dropConn(sub)
-	return map[string]any{"refresh_token": t.RefreshToken}, nil
+	return map[string]any{"refresh_token": t.RefreshToken, "provider": slug}, nil
 }
 
 // identifier reads the address of the account that just signed in, at the
 // OAuth callback, with the provider's own probe, so the mint can check it is
-// the account the holder meant.
+// the address the holder typed.
 func (s *Server) identifier(provider string) func(ctx context.Context, t oauth.Tokens) (string, error) {
 	return func(ctx context.Context, t oauth.Tokens) (string, error) {
 		drv, err := s.open(ctx, provider, func(context.Context) (string, error) { return t.AccessToken, nil })

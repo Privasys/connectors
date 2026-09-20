@@ -4,7 +4,7 @@
       "name": "configure",
       "role": "config",
       "endpoint": "/configure",
-      "description": "Name the identity provider whose word this connector takes on WHICH PERSON is approving a file store, and the two OAuth clients this deployment signs accounts in with: an Entra app registration for Microsoft (OneDrive, SharePoint) and a Google Cloud OAuth client for Google Drive. A client secret is sealed like any configured value and never leaves the enclave; a holder's own credential never travels this path. The identity fields default to the platform's own. The service serves nothing until this succeeds.",
+      "description": "Name the identity provider whose word this connector takes on WHICH PERSON is approving a file store, and the two OAuth clients this deployment signs accounts in with: an Entra app registration for Microsoft (OneDrive, SharePoint) and a Google Cloud OAuth client for Google Drive. The holder types their address and the connector tells from it which of the two hosts the account; an address at neither cannot be connected. A client secret is sealed like any configured value and never leaves the enclave; a holder's own credential never travels this path. The identity fields default to the platform's own. The service serves nothing until this succeeds.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -24,7 +24,7 @@
           },
           "microsoft_client_id": {
             "type": "string",
-            "description": "The application (client) id of an Entra app registration, for accounts in any organisational directory and personal Microsoft accounts, with https://<this host>/v1/oauth/callback as a web redirect URI and the delegated Graph permissions offline_access, User.Read, Files.Read.All, Sites.Read.All and Files.ReadWrite. Without it, Microsoft accounts cannot be connected here.",
+            "description": "The application (client) id of an Entra app registration, for accounts in any organisational directory and personal Microsoft accounts, with https://<this host>/v1/oauth/callback as a web redirect URI and the delegated Graph permissions offline_access, User.Read, Files.Read.All, Sites.Read.All and Files.ReadWrite. Without it, a Microsoft address cannot be connected here and the holder is told so.",
             "x-privasys": {
               "label": "Microsoft client id (optional)"
             }
@@ -39,7 +39,7 @@
           },
           "google_client_id": {
             "type": "string",
-            "description": "The OAuth client id of a Google Cloud project, created with https://<this host>/v1/oauth/callback as an authorised redirect URI and the Google Drive API enabled. Without it, Google accounts cannot be connected here.",
+            "description": "The OAuth client id of a Google Cloud project, created with https://<this host>/v1/oauth/callback as an authorised redirect URI and the Google Drive API enabled. Without it, a Google address cannot be connected here and the holder is told so.",
             "x-privasys": {
               "label": "Google OAuth client id (optional)"
             }
