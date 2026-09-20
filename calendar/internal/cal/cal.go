@@ -97,6 +97,9 @@ type Event struct {
 	// organiser at all.
 	Host   bool   `json:"host"`
 	Status string `json:"status,omitempty"`
+	// Free says the event shows the holder as available (TRANSP:TRANSPARENT):
+	// a birthday, a reminder. Not busy time.
+	Free bool `json:"free,omitempty"`
 
 	// Proposed is set on an event this connector created, with the run id
 	// it was created for.

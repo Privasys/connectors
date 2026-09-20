@@ -89,8 +89,9 @@ func Elicit(message string, schema map[string]any, secrets ...string) map[string
 type Setup interface {
 	// Question is what the wallet draws before it can mint, given the
 	// answers it has accumulated so far (nil at the first step). A connector
-	// with two steps decides the second from the first.
-	Question(ctx context.Context, answers map[string]any) map[string]any
+	// with two steps decides the second from the first. The request is the
+	// wallet's, for its context and for this service's own host.
+	Question(r *http.Request, answers map[string]any) map[string]any
 
 	// Connect proves the answers against the provider, keeps the credential
 	// in memory for sub, and returns what the wallet should keep for this
@@ -98,7 +99,7 @@ type Setup interface {
 	// the holder's own answers are already on their device). An
 	// *ElicitError asks one more question; an *Error carries its status (a
 	// 502 for a provider that refused the details); anything else is a 502.
-	Connect(ctx context.Context, sub string, answers map[string]any) (keep map[string]any, err error)
+	Connect(r *http.Request, sub string, answers map[string]any) (keep map[string]any, err error)
 }
 
 // Gate is what the shell needs from the configure-then-freeze state. Leave

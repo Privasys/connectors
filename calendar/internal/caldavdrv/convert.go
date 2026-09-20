@@ -132,6 +132,9 @@ func eventFrom(e ical.Event, o object, start, end time.Time, allDay bool, instan
 	if st, err := e.Status(); err == nil && st != "" {
 		ev.Status = strings.ToLower(string(st))
 	}
+	if tr, _ := e.Props.Text(ical.PropTransparency); strings.EqualFold(tr, "TRANSPARENT") {
+		ev.Free = true
+	}
 	ev.Attendees, ev.Organiser = participants(e.Component)
 	self = strings.ToLower(strings.TrimSpace(self))
 	ev.Host = ev.Organiser == nil || (self != "" && strings.EqualFold(ev.Organiser.Address, self))

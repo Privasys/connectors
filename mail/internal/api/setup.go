@@ -82,14 +82,15 @@ func hostElicit(user string, tried []string) map[string]any {
 
 // Question is the same at every step: the wallet accumulates answers, and
 // the follow-up for a server nobody could find comes from Connect.
-func (*setup) Question(context.Context, map[string]any) map[string]any { return setupElicit() }
+func (*setup) Question(*http.Request, map[string]any) map[string]any { return setupElicit() }
 
 // Connect connects the mailbox from the wallet's answers, before a mint: a
 // 428 for a server that could not be found (the wallet asks one more question
 // and mints again with all the answers), a 502 when the provider refused the
 // details. There is nothing for the wallet to keep: an IMAP credential is
 // what the holder typed, which their device already keeps.
-func (p *setup) Connect(ctx context.Context, sub string, answers map[string]any) (map[string]any, error) {
+func (p *setup) Connect(r *http.Request, sub string, answers map[string]any) (map[string]any, error) {
+	ctx := r.Context()
 	str := func(k string) string {
 		v, _ := answers[k].(string)
 		return strings.TrimSpace(v)

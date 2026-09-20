@@ -191,7 +191,7 @@ func (s *Service[T]) capabilityRoutes(m *http.ServeMux) {
 			web.WriteErr(w, http.StatusServiceUnavailable, s.recordError(err))
 			return
 		}
-		out := s.question(r.Context(), nil)
+		out := s.question(r, nil)
 		out["needed"] = true
 		out["prerequisites"] = []map[string]string{}
 		web.WriteJSON(w, http.StatusOK, out)
@@ -287,11 +287,11 @@ func (s *Service[T]) capabilityRoutes(m *http.ServeMux) {
 
 // question asks the connector what the wallet must draw. A connector without
 // a Setup has nothing to ask, which is only right in a test.
-func (s *Service[T]) question(ctx context.Context, answers map[string]any) map[string]any {
+func (s *Service[T]) question(r *http.Request, answers map[string]any) map[string]any {
 	if s.o.Setup == nil {
 		return Elicit("Connect your "+s.o.Resource+".", map[string]any{"type": "object", "properties": map[string]any{}})
 	}
-	return s.o.Setup.Question(ctx, answers)
+	return s.o.Setup.Question(r, answers)
 }
 
 // mint connects the credential from the wallet's answers, if any, and mints
@@ -330,7 +330,7 @@ func (s *Service[T]) mint(w http.ResponseWriter, r *http.Request) {
 	// back into memory.
 	var keep map[string]any
 	if len(req.Setup) > 0 && s.o.Setup != nil {
-		keep, err = s.o.Setup.Connect(r.Context(), sub, req.Setup)
+		keep, err = s.o.Setup.Connect(r, sub, req.Setup)
 		if err != nil {
 			var ask *ElicitError
 			var typed *Error
@@ -353,7 +353,7 @@ func (s *Service[T]) mint(w http.ResponseWriter, r *http.Request) {
 		// though it had worked. The answer is the question instead, so the
 		// holder connects on this same screen.
 		if errors.Is(err, credential.ErrNone) {
-			web.WriteJSON(w, http.StatusPreconditionRequired, map[string]any{"elicit": s.question(r.Context(), req.Setup)})
+			web.WriteJSON(w, http.StatusPreconditionRequired, map[string]any{"elicit": s.question(r, req.Setup)})
 			return
 		}
 		log.Printf("[capabilities] mint for holder %.8s… by %s: no usable credential: %v", sub, subject, err)

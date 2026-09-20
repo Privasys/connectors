@@ -41,7 +41,7 @@ type setup struct {
 	keep  map[string]any
 }
 
-func (s *setup) Question(context.Context, map[string]any) map[string]any {
+func (s *setup) Question(*http.Request, map[string]any) map[string]any {
 	return Elicit("Connect your box.", map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -52,11 +52,12 @@ func (s *setup) Question(context.Context, map[string]any) map[string]any {
 	}, "password")
 }
 
-func (s *setup) Connect(ctx context.Context, sub string, answers map[string]any) (map[string]any, error) {
+func (s *setup) Connect(r *http.Request, sub string, answers map[string]any) (map[string]any, error) {
+	ctx := r.Context()
 	user, _ := answers["user"].(string)
 	pw, _ := answers["password"].(string)
 	if user == "" || pw == "" {
-		return nil, &ElicitError{Elicit: s.Question(ctx, answers)}
+		return nil, &ElicitError{Elicit: s.Question(r, answers)}
 	}
 	if pw != "pw" {
 		return nil, Errorf(http.StatusBadGateway, "the box refused these details")
