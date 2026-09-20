@@ -1,3 +1,5 @@
+github.com/Privasys/ra-tls-clients/go v0.0.0-20260909145749-a5c458d7601e h1:GEEx7vTX3G/VJ8YqnkWPij2Y1SgfYJx5WWekqKz7Cmk=
+github.com/Privasys/ra-tls-clients/go v0.0.0-20260909145749-a5c458d7601e/go.mod h1:wviRyHrJNCYgV1I8po4vUJYQDe4F7DNcezYPxLDfa4Y=
 github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0 h1:7Q+xNAZFmnfYOMweHN3c/PDFUKKfY1pVJ26K++QvVfU=
 github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0/go.mod h1:1fEHWurg7pvf5SG6XNE5Q8UZmOwex51Mkx3SLhrW5B4=
 golang.org/x/oauth2 v0.37.0 h1:JUlcxA8oAtauLfiH8FX2/FkAWHAdi0QtGCGc+hofE98=
