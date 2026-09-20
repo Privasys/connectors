@@ -39,12 +39,13 @@ type Account struct {
 	// it (Google), empty otherwise.
 	Principal string    `json:"principal,omitempty"`
 	User      string    `json:"user"`
-	Secret    string    `json:"secret,omitempty"`
+	Secret    string    `json:"-"`
 	LinkedAt  time.Time `json:"linked_at"`
 
-	RefreshToken string    `json:"refresh_token,omitempty"`
-	AccessToken  string    `json:"access_token,omitempty"`
-	Expiry       time.Time `json:"expiry,omitempty"`
+	// Never serialised, whatever asks: Redacted is belt and braces.
+	RefreshToken string    `json:"-"`
+	AccessToken  string    `json:"-"`
+	Expiry       time.Time `json:"-"`
 }
 
 // Redacted is the account as anything outside this package may see it.
