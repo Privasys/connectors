@@ -34,11 +34,27 @@ jobs:
       - name: Test
         run: go test ./... -race -count=1
 
+  # Every directory with a privasys.json is a connector. Found from the tree
+  # rather than listed here, so adding a connector never edits this file and
+  # two connectors added in the same week never fight over one line.
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      connectors: ${{ steps.list.outputs.connectors }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: list
+        run: |
+          list=$(ls -d */privasys.json | cut -d/ -f1 | jq -R . | jq -sc .)
+          echo "connectors=$list" >> "$GITHUB_OUTPUT"
+          echo "$list"
+
   connector:
+    needs: discover
     strategy:
       fail-fast: false
       matrix:
-        connector: [mail, calendar]
+        connector: ${{ fromJSON(needs.discover.outputs.connectors) }}
     runs-on: ubuntu-latest
     defaults:
       run:
