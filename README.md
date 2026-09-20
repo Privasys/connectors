@@ -57,7 +57,7 @@ a set of MCP tools.
 | Path | Licence | Why |
 |---|---|---|
 | `sdk/` | **Apache-2.0** | The shell: the capability protocol, the holder and the acting user, the in-memory credential and its refusal, the MCP catalogue, the change-feed contract, configure-then-freeze and the certificate digest, the OAuth exchange with the wallet holding the browser, the redaction. This is the part a third-party connector gets dangerously wrong, so it is deliberately free to copy verbatim, including into proprietary connectors. We would rather our implementation spread than see it reimplemented badly. |
-| every connector (`mail/`, `calendar/`, later `zoom/`, `teams/`) | **AGPL-3.0** | Our products, consistent with the harness, Drive, the CLI and the runtime. A modified version offered as a service comes back. |
+| every connector (`mail/`, `calendar/`, `files/`, `meetings/`) | **AGPL-3.0** | Our products, consistent with the harness, Drive, the CLI and the runtime. A modified version offered as a service comes back. |
 
 Each directory carries its own `LICENSE`. Reused upstream code must be
 permissively licensed and vendored at an exact pin, never tracked; the shell
@@ -72,9 +72,11 @@ image build needs no workspace.
 | Path | What |
 |---|---|
 | `sdk/` | The shell. `connector` (the service: routes, the tool wrapper, the refusals), `holder` (who decides), `caller` (who acts, which app), `grant` (the capability), `credential` (the in-memory store, generic over the connector's shape), `configure` (configure-then-freeze, the digest, the extensions route), `mcp` (the catalogue from the embedded manifest), `feed` (the change-feed contract, park and poll), `oauth` (the sign-in with the wallet holding the browser), `redact`, `web`. |
-| `mail/` | **Mail Connector**: reads one mailbox for one attested agent under a capability the holder approved, and cannot send. The IMAP driver works; Microsoft Graph and the Gmail API come later. See `mail/README.md`. |
+| `mail/` | **Mail Connector**: reads one mailbox for one attested agent under a capability the holder approved, and cannot send. IMAP everywhere: a sign-in at Google or Microsoft (XOAUTH2), an app password only for a provider reached directly. See `mail/README.md`. |
 | `mail/cmd/imap-spike/` | The throwaway harness that answered the questions the connector could not be designed without. Kept, because its findings are still the reason the driver looks the way it does. |
-| `calendar/` | **Calendar Connector**: reads one calendar account over CalDAV (an app password, or a Google sign-in), leaves tentative proposals, and never sends an invitation. See `calendar/README.md`. |
+| `calendar/` | **Calendar Connector**: reads one calendar account (a Google sign-in over CalDAV, a Microsoft sign-in over Graph, an app password over CalDAV elsewhere), leaves tentative proposals, and never sends an invitation. See `calendar/README.md`. |
+| `files/` | **Files Connector**: reads and searches the files in OneDrive, SharePoint or Google Drive, saves into one folder it creates, never deletes, moves or shares. See `files/README.md`. |
+| `meetings/` | **Meetings Connector**: reads the transcripts Zoom or Microsoft Teams produced for meetings the holder was in, and keeps them in the holder's own Drive. Never joins, never records. See `meetings/README.md`. |
 
 ## Status
 
