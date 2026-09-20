@@ -141,6 +141,14 @@ type Options[T any] struct {
 	// and the capability list's resource_label: the address, never a secret.
 	Label func(cred T) string
 
+	// Prerequisites, when set, lists the approvals this service needs
+	// granted BEFORE its own capability can be minted, for the wallet to
+	// complete first: a connector with a Drive folder of its own asks the
+	// runtime broker for it here and returns the ask as {app_host, nonce}.
+	// Nil, and for every connector without a resource of its own, the list
+	// is empty.
+	Prerequisites func(r *http.Request, sub string) []map[string]string
+
 	// Manifest is the embedded privasys.json, parsed; nil serves no
 	// catalogue, which is only right in a test.
 	Manifest *mcp.Manifest

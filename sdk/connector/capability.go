@@ -162,9 +162,9 @@ func (s *Service[T]) capabilityRoutes(m *http.ServeMux) {
 	// read by the holder's wallet, mid-approval of another app, so the
 	// credential is connected on the approval screen itself and makes one
 	// attested hop, phone to this enclave. Also open to a verified peer app
-	// (the runtime relaying it). Nothing here is secret: a schema, and
-	// nothing to approve first, because a connector asks for no folder and
-	// no other resource of its own.
+	// (the runtime relaying it). Nothing here is secret: a schema, and what
+	// to approve first, which is nothing unless the connector declares a
+	// folder of its own (Options.Prerequisites).
 	m.HandleFunc("GET /v1/capabilities/setup", func(w http.ResponseWriter, r *http.Request) {
 		sub := s.Holder(r)
 		if sub == "" {
@@ -193,7 +193,13 @@ func (s *Service[T]) capabilityRoutes(m *http.ServeMux) {
 		}
 		out := s.question(r, nil)
 		out["needed"] = true
-		out["prerequisites"] = []map[string]string{}
+		prerequisites := []map[string]string{}
+		if s.o.Prerequisites != nil {
+			if listed := s.o.Prerequisites(r, sub); len(listed) > 0 {
+				prerequisites = listed
+			}
+		}
+		out["prerequisites"] = prerequisites
 		web.WriteJSON(w, http.StatusOK, out)
 	})
 

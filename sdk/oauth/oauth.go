@@ -54,6 +54,11 @@ type Provider struct {
 	// issues a refresh token only with access_type=offline and prompt=consent
 	// together; that is the connector's to say.
 	AuthParams map[string]string
+	// ClientAuthInHeader sends the client id and secret to the token
+	// endpoint as HTTP Basic rather than in the body. Google and Microsoft
+	// take the body; Zoom documents the header. The zero value is the body,
+	// so nothing changes for a provider that does not say.
+	ClientAuthInHeader bool
 }
 
 // Tokens is a token set, as kept in memory and as handed to the wallet.
@@ -348,9 +353,13 @@ func (f *Flow) config(callback string) (*oauth2.Config, bool) {
 	if id == "" || secret == "" {
 		return nil, false
 	}
+	style := oauth2.AuthStyleInParams
+	if f.provider.ClientAuthInHeader {
+		style = oauth2.AuthStyleInHeader
+	}
 	return &oauth2.Config{
 		ClientID: id, ClientSecret: secret,
-		Endpoint:    oauth2.Endpoint{AuthURL: f.provider.AuthURL, TokenURL: f.provider.TokenURL, AuthStyle: oauth2.AuthStyleInParams},
+		Endpoint:    oauth2.Endpoint{AuthURL: f.provider.AuthURL, TokenURL: f.provider.TokenURL, AuthStyle: style},
 		RedirectURL: callback,
 		Scopes:      f.provider.Scopes,
 	}, true
