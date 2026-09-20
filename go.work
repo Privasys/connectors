@@ -9,5 +9,6 @@ use (
 	./calendar
 	./files
 	./mail
+	./meetings
 	./sdk
 )
