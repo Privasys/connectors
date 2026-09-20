@@ -1,35 +1,23 @@
 // Copyright (c) Privasys. All rights reserved.
 // Licensed under the GNU Affero General Public License v3.0.
 
-// Package store holds each holder's mailbox credential for as long as this
-// process lives, and nowhere else.
+// Package store is the shape of a mailbox credential, kept by the sdk's
+// in-memory store for as long as this process lives and nowhere else.
 //
-// The design decision (2026-09-17) is that the connector keeps NOTHING at
-// rest. The credential is at rest only on the holder's own device: their
-// wallet keeps the answers it sent with the approval and sends them again on
-// the next ask. Here it exists only in the memory of this attested process,
-// and it is gone the moment the process is. There is no sealing key, no
-// volume and no storage peer, so there is nothing to withdraw, rotate or
-// clean up, and no second approval to obtain before the first.
-//
-// The price is accepted: a restart forgets every credential. Each holder then
-// gets one request on their phone at the next use, and their unattended runs
-// wait until they answer it.
-//
-// The Store interface stays so the rest of the connector is written against
-// the seam rather than the map, and so a test can observe what was kept.
+// The rule (2026-09-17) is the sdk's: the connector keeps NOTHING at rest.
+// What is the mail connector's is the shape below, and the promise that
+// Secret never leaves this process by any surface.
 package store
 
 import (
-	"context"
-	"errors"
-	"sync"
 	"time"
+
+	"github.com/Privasys/connectors/sdk/credential"
 )
 
 // ErrNoAccount means this holder's credential is not in memory: they have
 // never connected a mailbox here, or this process has restarted since.
-var ErrNoAccount = errors.New("no mailbox credential in memory for this user")
+var ErrNoAccount = credential.ErrNone
 
 // Account is one connected mailbox.
 //
@@ -55,57 +43,9 @@ func (a Account) Redacted() Account {
 }
 
 // Store keeps one account per subject.
-//
-// The subject is the platform's identity for the acting user, asserted by the
-// attested relay. It is never taken from a request body: an app that could
-// name its own subject could read anyone's mailbox.
-type Store interface {
-	Get(ctx context.Context, sub string) (Account, error)
-	Put(ctx context.Context, sub string, a Account) error
-	Delete(ctx context.Context, sub string) error
-	Close() error
-}
+type Store = credential.Store[Account]
 
-// Memory is the store: a map, under a lock, in this process.
-//
-// It is the production backend, not a stand-in for one. Anything more durable
-// would be a copy of a holder's credential that outlives their decision to
-// have this service hold it, which is exactly what the design forbids.
-type Memory struct {
-	mu   sync.Mutex
-	subs map[string]Account
-}
+// Memory is the in-process store, and the only one.
+type Memory = credential.Memory[Account]
 
-func NewMemory() *Memory { return &Memory{subs: map[string]Account{}} }
-
-func (m *Memory) Get(_ context.Context, sub string) (Account, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	a, ok := m.subs[sub]
-	if !ok {
-		return Account{}, ErrNoAccount
-	}
-	return a, nil
-}
-
-func (m *Memory) Put(_ context.Context, sub string, a Account) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.subs[sub] = a
-	return nil
-}
-
-func (m *Memory) Delete(_ context.Context, sub string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.subs, sub)
-	return nil
-}
-
-// Close forgets every credential. Nothing survives it, which is the point.
-func (m *Memory) Close() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.subs = map[string]Account{}
-	return nil
-}
+func NewMemory() *Memory { return credential.NewMemory[Account]() }

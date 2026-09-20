@@ -1,5 +1,5 @@
 // Copyright (c) Privasys. All rights reserved.
-// Licensed under the GNU Affero General Public License v3.0.
+// Licensed under the Apache License, Version 2.0.
 
 // Package holder answers one question: which PERSON is this, as opposed to
 // which app.
@@ -425,4 +425,43 @@ func hasAudience(claims map[string]any, want string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------- the request
+
+// RelaySubjectHeader is the identity the RUNTIME asserts for a person behind
+// the sealed transport. The session-relay middleware strips any inbound value
+// on every path before dispatching, so a caller cannot supply it; that
+// stripping is the whole reason this header can be trusted and the reason it
+// is not the same header an app uses to name the user it acts for.
+const RelaySubjectHeader = "X-Privasys-Sub"
+
+// Of returns the authenticated PERSON behind a request, established two ways
+// and no others: the relay-asserted subject, or a bearer token from the
+// platform's identity provider that v verifies.
+//
+// It deliberately does NOT read X-Privasys-On-Behalf-Of, and an earlier
+// version of the mail connector did, which was a privilege escalation rather
+// than an untidiness. That header is written by the calling app. Trusting it
+// here would have let the very app that wants access to a mailbox mint itself
+// the capability granting it, for any user it cared to name, without a wallet
+// screen ever being drawn. The app names the user it ACTS FOR; only the
+// platform, or the person's own token, names the user who DECIDES.
+//
+// Failing closed matters more here than a helpful error, so an unverifiable
+// token is the same answer as no token: this call is not a holder. A nil
+// verifier refuses every bearer rather than accepting any.
+func Of(r *http.Request, v Verifier) string {
+	if sub := strings.TrimSpace(r.Header.Get(RelaySubjectHeader)); sub != "" {
+		return sub
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(auth, "Bearer ") || v == nil {
+		return ""
+	}
+	id, err := v.Verify(r.Context(), strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")))
+	if err != nil || id == nil {
+		return ""
+	}
+	return id.Sub
 }

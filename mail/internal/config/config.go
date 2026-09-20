@@ -1,27 +1,26 @@
 // Copyright (c) Privasys. All rights reserved.
 // Licensed under the GNU Affero General Public License v3.0.
 
-// Package config holds the deployment settings an owner supplies once.
-//
-// Not baked into the image, because the same image serves dev and production
-// and the identity provider it trusts differs between them. Not read from the
-// environment either: the platform's configure-then-freeze path commits a hash
-// of what was set into the RA-TLS leaf, so what this service was told is part
-// of what it can be checked against. An environment variable is invisible to
-// that.
+// Package config is the shape of this deployment's settings. Storing them,
+// gating on them and attesting them is the sdk's (package configure); what
+// they are is this connector's, and here it is the root of holder identity
+// and nothing else.
 //
 // Nothing here is a secret, and nothing here names a storage peer: this
-// service keeps no holder data at rest, so there is no peer to name. What is
-// left is the root of holder identity.
+// service keeps no holder data at rest, so there is no peer to name.
 package config
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
+
+	"github.com/Privasys/connectors/sdk/configure"
+)
+
+// The platform's own identity provider, and the audience the wallet mints its
+// platform token for.
+const (
+	DefaultIdpIssuer   = configure.DefaultIdpIssuer
+	DefaultIdpAudience = configure.DefaultIdpAudience
 )
 
 type Config struct {
@@ -38,22 +37,11 @@ type Config struct {
 	IdpAudience string `json:"idp_audience,omitempty"`
 }
 
-func (c Config) Validate() error {
-	// An issuer reached over anything but https would let whoever answers that
-	// name decide who the holder is.
-	if iss := strings.TrimSpace(c.IdpIssuer); iss != "" && !strings.HasPrefix(iss, "https://") {
-		return errors.New("idp_issuer must be an https URL: holder identity is rooted in it")
-	}
-	return nil
-}
+func (c Config) Validate() error { return configure.ValidateIssuer(c.IdpIssuer) }
 
-// Normalised returns the config as it should be stored and used.
-//
-// The identity-provider fields are DEFAULTED here rather than at the point of
-// use, so that what is stored, what is served from GET /configure and what is
-// hashed into the certificate are the same two strings. A default applied
-// later would mean the certificate attested an empty field while the service
-// trusted a real issuer.
+// Normalised returns the config as it should be stored and used, defaults
+// applied here so that what is stored, what is served and what is hashed into
+// the certificate are the same two strings.
 func (c Config) Normalised() Config {
 	out := Config{
 		IdpIssuer:   strings.TrimRight(strings.TrimSpace(c.IdpIssuer), "/"),
@@ -68,52 +56,17 @@ func (c Config) Normalised() Config {
 	return out
 }
 
-// The platform's own identity provider, and the audience the wallet mints its
-// platform token for.
-const (
-	DefaultIdpIssuer   = "https://privasys.id"
-	DefaultIdpAudience = "privasys-platform"
-)
+// Identity is the root of holder identity.
+func (c Config) Identity() (issuer, audience string) { return c.IdpIssuer, c.IdpAudience }
 
-// Load reads the stored config. A missing file is not an error: it is the
-// ordinary state of an app that has been deployed and not yet configured, and
-// the platform holds every other endpoint at 503 until it has been.
-func Load(path string) (Config, bool, error) {
-	raw, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return Config{}, false, nil
-	}
-	if err != nil {
-		return Config{}, false, err
-	}
-	var c Config
-	if err := json.Unmarshal(raw, &c); err != nil {
-		return Config{}, false, fmt.Errorf("stored configuration is unreadable: %w", err)
-	}
-	if err := c.Validate(); err != nil {
-		// Refuse rather than run on half of it. A connector trusting an issuer
-		// nobody can verify is worse than one that will not start.
-		return Config{}, false, fmt.Errorf("stored configuration is invalid: %w", err)
-	}
-	return c.Normalised(), true, nil
-}
+// DigestFields is what the certificate digest covers: the identity provider
+// is the whole configuration, and the claim worth attesting, because which
+// issuer is trusted decides whose approval can hand a mailbox over.
+func (c Config) DigestFields() []string { return []string{c.IdpIssuer, c.IdpAudience} }
 
-func Save(path string, c Config) error {
-	if err := c.Validate(); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	raw, err := json.MarshalIndent(c.Normalised(), "", "  ")
-	if err != nil {
-		return err
-	}
-	// Write and rename, so a crash mid-write cannot leave a truncated file
-	// that the next boot refuses to parse.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+// Public is what /configure answers with: whose approvals this deployment
+// will honour. Worth showing, because an operator who cannot see the issuer
+// cannot tell whose wallet can grant access to a mailbox here.
+func (c Config) Public() map[string]any {
+	return map[string]any{"idp_issuer": c.IdpIssuer, "idp_audience": c.IdpAudience}
 }

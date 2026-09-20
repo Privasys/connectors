@@ -11,9 +11,14 @@ WORKDIR /build/mail
 # Dependencies first, as their own layer, so a source change does not re-fetch
 # the module graph. -mod=readonly because a build that can edit go.mod can
 # quietly ship a different dependency than the one that was reviewed.
+# The sdk is built from this repository beside the connector (a replace
+# directive in go.mod), so its module file is needed before the download and
+# its source before the build.
+COPY sdk/go.mod /build/sdk/go.mod
 COPY mail/go.mod mail/go.sum ./
 RUN go mod download
 
+COPY sdk /build/sdk
 COPY mail .
 
 # Static, stripped, and with the build paths trimmed. -trimpath matters beyond

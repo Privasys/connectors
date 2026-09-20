@@ -19,9 +19,10 @@ import (
 
 	"github.com/Privasys/connectors/mail/internal/api"
 	"github.com/Privasys/connectors/mail/internal/config"
-	"github.com/Privasys/connectors/mail/internal/grant"
-	"github.com/Privasys/connectors/mail/internal/holder"
 	"github.com/Privasys/connectors/mail/internal/store"
+	"github.com/Privasys/connectors/sdk/configure"
+	"github.com/Privasys/connectors/sdk/grant"
+	"github.com/Privasys/connectors/sdk/holder"
 )
 
 func main() {
@@ -49,14 +50,14 @@ func main() {
 	// starts and serves /configure; everything else answers 503 until it has
 	// been. Refusing to boot would leave an operator nothing to configure.
 	path := envOr("MAIL_CONFIG", "/data/mail-connector/config.json")
-	cfg, found, err := config.Load(path)
+	cfg, found, err := configure.Load[config.Config](path)
 	if err != nil {
 		// Stored settings that will not parse or will not validate: refuse
 		// rather than run on half of them. A connector trusting an issuer
 		// nobody can verify is worse than one that will not start.
 		log.Fatalf("configuration at %s: %v", path, err)
 	}
-	srv.SetConfigurable(path, cfg, found)
+	srv.SetConfigurable(configure.NewGate(path, cfg, found))
 	if found {
 		srv.SetVerifier(holder.NewJWKS(cfg.IdpIssuer, cfg.IdpAudience))
 		log.Printf("holders are whoever %s says they are", cfg.IdpIssuer)

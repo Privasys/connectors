@@ -1,5 +1,5 @@
 // Copyright (c) Privasys. All rights reserved.
-// Licensed under the GNU Affero General Public License v3.0.
+// Licensed under the Apache License, Version 2.0.
 
 package grant
 
@@ -10,11 +10,14 @@ import (
 	"time"
 )
 
+// testKind is the one kind the connector under test issues.
+const testKind = "mail.mailbox"
+
 func validRequest() Request {
 	return Request{
 		Nonce:        "n-1",
 		SubjectAppID: "590ebdc31b63401fbbb822d5f3886c5e",
-		Kind:         Kind,
+		Kind:         testKind,
 		Permissions:  []string{"read", "write"},
 		ExpiresUnix:  time.Now().Add(90 * 24 * time.Hour).Unix(),
 		Req:          map[string]any{"label": "Inbox"},
@@ -27,7 +30,7 @@ func TestRequestMayNotNameTheHolder(t *testing.T) {
 	for _, field := range []string{"user", "sub", "account", "mailbox", "tenant", "owner", "email", "address"} {
 		r := validRequest()
 		r.Req = map[string]any{field: "someone-else@example.com"}
-		if _, _, err := r.Validate(time.Now()); !errors.Is(err, ErrBadInput) {
+		if _, _, err := r.Validate(time.Now(), testKind); !errors.Is(err, ErrBadInput) {
 			t.Errorf("a request naming %q should be refused, got %v", field, err)
 		}
 	}
@@ -49,11 +52,11 @@ func TestRequestValidation(t *testing.T) {
 	for name, mangle := range cases {
 		r := validRequest()
 		mangle(&r)
-		if _, _, err := r.Validate(now); err == nil {
+		if _, _, err := r.Validate(now, testKind); err == nil {
 			t.Errorf("%s should have been refused", name)
 		}
 	}
-	if _, _, err := validRequest().Validate(now); err != nil {
+	if _, _, err := validRequest().Validate(now, testKind); err != nil {
 		t.Errorf("a valid request was refused: %v", err)
 	}
 }
@@ -98,7 +101,7 @@ func TestNormaliseSubject(t *testing.T) {
 func TestMintFindRevoke(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemory()
-	subject, perms, err := validRequest().Validate(time.Now())
+	subject, perms, err := validRequest().Validate(time.Now(), testKind)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,15 +137,27 @@ func TestMintFindRevoke(t *testing.T) {
 	if _, err := m.Find(ctx, "user-1", subject); !errors.Is(err, ErrNoGrant) {
 		t.Errorf("revoke did not remove access: %v", err)
 	}
+	if err := m.Revoke(ctx, "user-1", g.ID); !errors.Is(err, ErrGone) {
+		t.Errorf("revoking twice is told apart from revoking nothing (a wallet that retried), got %v", err)
+	}
+	// Another holder revoking that id is refused as though it never existed:
+	// whether it exists is not theirs to learn.
+	if err := m.Revoke(ctx, "user-2", g.ID); !errors.Is(err, ErrNoGrant) {
+		t.Errorf("another holder learned the id was real: %v", err)
+	}
+	// Close forgets grants and the memory of revokes alike.
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := m.Revoke(ctx, "user-1", g.ID); !errors.Is(err, ErrNoGrant) {
-		t.Errorf("revoking twice should report nothing to revoke, got %v", err)
+		t.Errorf("a revoked id survived Close: %v", err)
 	}
 }
 
 func TestExpiredGrantIsNotUsable(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemory()
-	subject, _, _ := validRequest().Validate(time.Now())
+	subject, _, _ := validRequest().Validate(time.Now(), testKind)
 	if _, err := m.Mint(ctx, "user-1", Grant{
 		Subject: subject, Permissions: []Permission{Read},
 		ExpiresAt: time.Now().Add(-time.Minute),
@@ -159,7 +174,7 @@ func TestExpiredGrantIsNotUsable(t *testing.T) {
 func TestReapprovalReplaces(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemory()
-	subject, _, _ := validRequest().Validate(time.Now())
+	subject, _, _ := validRequest().Validate(time.Now(), testKind)
 	for i := 0; i < 3; i++ {
 		if _, err := m.Mint(ctx, "user-1", Grant{
 			Subject: subject, Permissions: []Permission{Read},

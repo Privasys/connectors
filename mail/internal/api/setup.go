@@ -19,9 +19,8 @@ package api
 // any form, by any endpoint: the only thing that reads it after this is the
 // code that dials the mailbox.
 //
-// It is kept in memory and nowhere else. The holder's device keeps the
-// answers it sent and sends them again when this service asks again, so a
-// restart here costs one more tap on their phone and nothing more.
+// The routes, the mint and the 428 contract are the sdk's. What is this
+// connector's is below: the schema, the probe, and what is kept.
 
 import (
 	"context"
@@ -35,6 +34,7 @@ import (
 	"github.com/Privasys/connectors/mail/internal/imapdrv"
 	"github.com/Privasys/connectors/mail/internal/mail"
 	"github.com/Privasys/connectors/mail/internal/store"
+	"github.com/Privasys/connectors/sdk/connector"
 )
 
 // mailboxDetails is what the holder answered: the address and the password,
@@ -46,12 +46,15 @@ type mailboxDetails struct {
 	OwnDomains []string
 }
 
+// setup is the connector's side of the wallet's approval screen.
+type setup struct{ s *Server }
+
 // setupElicit is the question: address and password, the server found from
 // the address (discover) and asked for only when nothing resolves.
 func setupElicit() map[string]any {
-	return map[string]any{
-		"message": "Connect your mailbox. What you enter goes to the mail connector's enclave and is kept by this device; the service stores nothing.",
-		"requestedSchema": map[string]any{
+	return connector.Elicit(
+		"Connect your mailbox. What you enter goes to the mail connector's enclave and is kept by this device; the service stores nothing.",
+		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"user": map[string]any{"type": "string", "title": "Email address", "format": "email"},
@@ -60,55 +63,53 @@ func setupElicit() map[string]any {
 			},
 			"required": []string{"user", "password"},
 		},
-		"secrets": []string{"password"},
-	}
+		"password")
 }
 
 // hostElicit is the follow-up question when the server could not be found.
 func hostElicit(user string, tried []string) map[string]any {
-	return map[string]any{
-		"message": "The mail server for " + strings.TrimSpace(user) + " could not be found automatically.",
-		"requestedSchema": map[string]any{
+	return connector.Elicit(
+		"The mail server for "+strings.TrimSpace(user)+" could not be found automatically.",
+		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"host": map[string]any{"type": "string", "title": "IMAP server",
 					"description": "As host:port, for example imap.example.com:993. Tried: " + strings.Join(tried, ", ") + "."},
 			},
 			"required": []string{"host"},
-		},
-	}
+		})
 }
 
-// connectFromSetup connects the mailbox from the wallet's answers, before a
-// mint. It writes the response itself on every failure and reports whether
-// the mint may go on: a 428 for a server that could not be found (the wallet
-// asks one more question and mints again with all the answers), a 502 when
-// the provider refused the details.
-func (s *Server) connectFromSetup(w http.ResponseWriter, r *http.Request, cs store.Store, sub string, setup map[string]any) bool {
+// Question is the same at every step: the wallet accumulates answers, and
+// the follow-up for a server nobody could find comes from Connect.
+func (*setup) Question(context.Context, map[string]any) map[string]any { return setupElicit() }
+
+// Connect connects the mailbox from the wallet's answers, before a mint: a
+// 428 for a server that could not be found (the wallet asks one more question
+// and mints again with all the answers), a 502 when the provider refused the
+// details. There is nothing for the wallet to keep: an IMAP credential is
+// what the holder typed, which their device already keeps.
+func (p *setup) Connect(ctx context.Context, sub string, answers map[string]any) (map[string]any, error) {
 	str := func(k string) string {
-		v, _ := setup[k].(string)
+		v, _ := answers[k].(string)
 		return strings.TrimSpace(v)
 	}
 	req := mailboxDetails{User: str("user"), Password: str("password"), Host: str("host")}
 	if req.User == "" || req.Password == "" {
-		writeJSON(w, http.StatusPreconditionRequired, map[string]any{"elicit": setupElicit()})
-		return false
+		return nil, &connector.ElicitError{Elicit: setupElicit()}
 	}
-	host, tried, err := s.pickHost(r.Context(), req)
+	host, tried, err := p.s.pickHost(ctx, req)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
-		return false
+		return nil, connector.Errorf(http.StatusBadGateway, "%v", err)
 	}
 	if host == "" {
-		writeJSON(w, http.StatusPreconditionRequired, map[string]any{"elicit": hostElicit(req.User, tried)})
-		return false
+		return nil, &connector.ElicitError{Elicit: hostElicit(req.User, tried)}
 	}
 	req.Host = host
-	if status, err := s.keepMailbox(r.Context(), cs, sub, req); err != nil {
-		writeErr(w, status, err.Error())
-		return false
+	if err := p.s.keepMailbox(ctx, sub, req); err != nil {
+		return nil, connector.Errorf(http.StatusInternalServerError, "%v", err)
 	}
-	return true
+	return nil, nil
 }
 
 // pickHost finds the server that accepts the credential: the one given, or
@@ -141,15 +142,15 @@ func (s *Server) pickHost(ctx context.Context, req mailboxDetails) (host string,
 }
 
 // keepMailbox holds, in memory, a credential already proven against req.Host.
-func (s *Server) keepMailbox(ctx context.Context, cs store.Store, sub string, req mailboxDetails) (int, error) {
-	if err := cs.Put(ctx, sub, store.Account{
+func (s *Server) keepMailbox(ctx context.Context, sub string, req mailboxDetails) error {
+	if err := s.credStore().Put(ctx, sub, store.Account{
 		Provider: "imap", Host: req.Host, User: req.User, Secret: req.Password,
 		OwnDomains: cleanDomains(req.OwnDomains), LinkedAt: time.Now(),
 	}); err != nil {
-		return http.StatusInternalServerError, err
+		return err
 	}
 	s.dropConn(sub) // any cached connection is for the old credential
-	return http.StatusOK, nil
+	return nil
 }
 
 // proveCredential opens the mailbox once and closes it.

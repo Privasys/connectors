@@ -12,16 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Privasys/connectors/mail/internal/holder"
+	"github.com/Privasys/connectors/sdk/holder"
 )
 
 const testApp = "590ebdc31b63401fbbb822d5f3886c5e"
 
 func guardedServer(t *testing.T) (*Server, *fakeDriver) {
 	t.Helper()
-	s, drv := newTestServer(t)
-	s.requireGrant = true
-	return s, drv
+	return newServer(t, true)
 }
 
 // callAs makes a tool call as a user, optionally with a verified calling app.
@@ -287,7 +285,7 @@ func TestFailsClosedByDefault(t *testing.T) {
 	// value being permissive would be exactly the wrong default, so the
 	// constructor takes it explicitly.
 	s := New(fakeStore{}, nil, true)
-	if !s.requireGrant {
+	if !s.svc.RequireGrant() {
 		t.Fatal("New(..., true) must enforce")
 	}
 }

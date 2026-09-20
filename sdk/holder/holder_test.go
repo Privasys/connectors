@@ -1,5 +1,5 @@
 // Copyright (c) Privasys. All rights reserved.
-// Licensed under the GNU Affero General Public License v3.0.
+// Licensed under the Apache License, Version 2.0.
 
 package holder
 

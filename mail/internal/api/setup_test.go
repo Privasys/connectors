@@ -14,8 +14,9 @@ import (
 	"time"
 
 	"github.com/Privasys/connectors/mail/internal/discover"
-	"github.com/Privasys/connectors/mail/internal/grant"
+	"github.com/Privasys/connectors/mail/internal/mail"
 	"github.com/Privasys/connectors/mail/internal/store"
+	"github.com/Privasys/connectors/sdk/grant"
 )
 
 // A test must never reach the network to find a server.
@@ -161,7 +162,7 @@ func TestMintWithSetupKeepsTheCredentialAndMints(t *testing.T) {
 	if got.CapabilityID == "" || got.Nonce != "n-1" || got.ExpiresUnix == 0 {
 		t.Fatalf("the mint is incomplete: %s", w.Body)
 	}
-	if got.ServiceResult["account"] != "me@example.org" || got.ServiceResult["kind"] != grant.Kind {
+	if got.ServiceResult["account"] != "me@example.org" || got.ServiceResult["kind"] != mail.Kind {
 		t.Fatalf("service_result should name the mailbox and the kind: %s", w.Body)
 	}
 	if got.Keep != nil {

@@ -12,9 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Privasys/connectors/mail/internal/grant"
 	"github.com/Privasys/connectors/mail/internal/store"
+	"github.com/Privasys/connectors/sdk/connector"
+	"github.com/Privasys/connectors/sdk/grant"
 )
+
+// capabilityView is the shared shape, which is the sdk's.
+type capabilityView = connector.View
 
 // holderServer runs over the real memory store, so "the credential is gone"
 // is observed the way the connector observes it: Get no longer finds it. The
@@ -24,12 +28,9 @@ func holderServer(t *testing.T) (*Server, *store.Memory, *fakeDriver, *fakeDrive
 	cs := store.NewMemory()
 	_ = cs.Put(context.Background(), "user-1", store.Account{Provider: "imap", User: "u@example.com", Secret: "pw"})
 	tools, feed := &fakeDriver{}, &fakeDriver{}
-	s := &Server{
-		store:  cs,
-		grants: grant.NewMemory(),
-		conns:  map[string]*conn{"user-1": {drv: tools, used: time.Now()}},
-		feeds:  map[string]*conn{"user-1": {drv: feed, used: time.Now()}},
-	}
+	s := New(cs, grant.NewMemory(), false)
+	s.conns["user-1"] = &conn{drv: tools, used: time.Now()}
+	s.feeds["user-1"] = &conn{drv: feed, used: time.Now()}
 	return s, cs, tools, feed
 }
 

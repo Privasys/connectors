@@ -2,14 +2,14 @@
 // Licensed under the GNU Affero General Public License v3.0.
 
 // Package api is the connector's HTTP surface: the tools an attested agent
-// calls, and the platform endpoints the runtime calls.
+// calls, over the shell every connector shares (the sdk's package connector).
 //
-// Two rules shape everything here.
-//
-// The acting user is asserted by the platform, never by the caller. It arrives
-// as X-Privasys-On-Behalf-Of on a leg the runtime has already authenticated.
-// An app that could name its own subject could read anyone's mailbox, so a
-// request without one is refused rather than defaulted.
+// What is the mail connector's here is the tool list, the mailbox connection
+// each tool runs against, and the mapping of the driver's errors to statuses.
+// Who the holder is, who a call acts for, the capability check, the credential
+// refusal, the wallet-facing routes, the catalogue and the configure gate are
+// the sdk's, so they are the same code in every connector rather than
+// equivalent code.
 //
 // The tool surface is the smallest thing that does the job. There is no send,
 // no folder management and no arbitrary IMAP: every capability omitted is one
@@ -21,21 +21,30 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Privasys/connectors/mail/internal/grant"
-	"github.com/Privasys/connectors/mail/internal/holder"
+	manifest "github.com/Privasys/connectors/mail"
 	"github.com/Privasys/connectors/mail/internal/imapdrv"
 	"github.com/Privasys/connectors/mail/internal/mail"
 	"github.com/Privasys/connectors/mail/internal/store"
+	"github.com/Privasys/connectors/sdk/caller"
+	"github.com/Privasys/connectors/sdk/connector"
+	"github.com/Privasys/connectors/sdk/feed"
+	"github.com/Privasys/connectors/sdk/grant"
+	"github.com/Privasys/connectors/sdk/holder"
+	"github.com/Privasys/connectors/sdk/web"
 )
 
-// SubjectHeader is how the attested runtime names the acting user.
-const SubjectHeader = "X-Privasys-On-Behalf-Of"
+// The headers are the sdk's; named here so this package reads as it did.
+const (
+	SubjectHeader      = caller.SubjectHeader
+	PeerAppHeader      = caller.PeerAppHeader
+	PeerVerifiedHeader = caller.PeerVerifiedHeader
+	RelaySubjectHeader = holder.RelaySubjectHeader
+)
 
 // idleTTL is how long an unused mailbox connection is kept. IMAP connections
 // are cheap but not free, and a connector serving many users should not hold
@@ -43,30 +52,11 @@ const SubjectHeader = "X-Privasys-On-Behalf-Of"
 const idleTTL = 20 * time.Minute
 
 type Server struct {
-	// store holds each holder's credential in memory, and grants their
-	// capabilities beside it. Both are lost together at a restart, and both
-	// come back together with the wallet's next mint.
-	store  store.Store
-	grants grant.Store
-
-	// requireGrant is the fail-closed switch. On the platform every tool call
-	// must be covered by a capability the holder approved. It can be turned
-	// off only for development, deliberately and explicitly, because a
-	// connector that serves mail without checking is the whole risk.
-	requireGrant bool
-
-	// cfg is the configure-then-freeze state, nil when the deployment takes no
-	// configuration.
-	cfg *configurable
+	// svc is the shell: credentials, capabilities, the holder, the routes.
+	svc *connector.Service[store.Account]
 
 	// prove stands in for the mailbox when a test connects one; nil dials it.
 	prove func(context.Context, mailboxDetails) error
-
-	// tokens verifies a holder's own bearer token, which is how the WALLET
-	// identifies the person when it dials this service directly to mint a
-	// capability. Nil until configure names an issuer, and a nil verifier
-	// refuses every bearer rather than accepting any.
-	tokens holder.Verifier
 
 	mu    sync.Mutex
 	conns map[string]*conn
@@ -80,34 +70,59 @@ type Server struct {
 	feeds map[string]*conn
 }
 
-// SetVerifier installs the holder-token verifier. Separate from New because
-// the issuer arrives with the configuration, not at startup, and configure can
-// replace it while requests are in flight.
-func (s *Server) SetVerifier(v holder.Verifier) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.tokens = v
-}
-
-// verifier reads it back under the same lock. Every field configure can swap
-// needs this: the read that would have bitten is a wallet call verifying
-// against a verifier being replaced.
-func (s *Server) verifier() holder.Verifier {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.tokens
-}
-
 type conn struct {
 	drv  mail.Driver
 	used time.Time
 }
 
+// New builds the connector over its stores. requireGrant is taken explicitly
+// rather than defaulted, because the zero value being permissive would be
+// exactly the wrong default.
 func New(s store.Store, g grant.Store, requireGrant bool) *Server {
-	srv := &Server{store: s, grants: g, requireGrant: requireGrant, conns: map[string]*conn{}, feeds: map[string]*conn{}}
+	srv := &Server{conns: map[string]*conn{}, feeds: map[string]*conn{}}
+	srv.svc = connector.New(connector.Options[store.Account]{
+		Kind:     mail.Kind,
+		Resource: "mailbox",
+		Name:     "Privasys Mail Connector",
+		Note: "Reads one mailbox for one attested agent, under a capability the holder approved on their device. " +
+			"There is no page to connect a mailbox on: the holder's wallet asks for the details on the approval screen, " +
+			"and this service keeps them only in memory.",
+		Credentials:  s,
+		Grants:       g,
+		RequireGrant: requireGrant,
+		Setup:        &setup{s: srv},
+		Label:        func(a store.Account) string { return a.User },
+		Manifest:     manifest.Manifest(),
+		// A pooled IMAP session is the credential in use, and one that
+		// outlived the credential would keep reading a mailbox the holder
+		// just withdrew until the idle reaper found it.
+		OnForget:    srv.dropConn,
+		OnForgetAll: srv.closeAll,
+	})
 	go srv.reapIdle()
 	return srv
 }
+
+// SetVerifier installs the holder-token verifier.
+func (s *Server) SetVerifier(v holder.Verifier) { s.svc.SetVerifier(v) }
+
+// SetConfigurable arms the configure endpoint.
+func (s *Server) SetConfigurable(g connector.Gate) { s.svc.SetConfig(g) }
+
+// credStore and grantStore read the current stores through the shell.
+func (s *Server) credStore() store.Store  { return s.svc.Credentials() }
+func (s *Server) grantStore() grant.Store { return s.svc.Grants() }
+
+func (s *Server) configured() bool { return s.svc.Configured() }
+
+// authorise is the shell's two-question check, kept callable here for the
+// tests that read its sentences.
+func (s *Server) authorise(r *http.Request, sub string, need grant.Permission) error {
+	return s.svc.Authorise(r, sub, need)
+}
+
+// Close forgets every credential and closes every cached mailbox connection.
+func (s *Server) Close() error { return s.svc.Close() }
 
 func (s *Server) reapIdle() {
 	for range time.Tick(time.Minute) {
@@ -132,6 +147,18 @@ func (s *Server) dropConn(sub string) {
 	defer s.mu.Unlock()
 	for _, pool := range []map[string]*conn{s.conns, s.feeds} {
 		if c, ok := pool[sub]; ok {
+			_ = c.drv.Close()
+			delete(pool, sub)
+		}
+	}
+}
+
+// closeAll drops every mailbox connection this process holds.
+func (s *Server) closeAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, pool := range []map[string]*conn{s.conns, s.feeds} {
+		for sub, c := range pool {
 			_ = c.drv.Close()
 			delete(pool, sub)
 		}
@@ -193,31 +220,7 @@ func (s *Server) driverIn(ctx context.Context, sub string, pool map[string]*conn
 // Routes returns the mux. Tool endpoints mirror the manifest exactly.
 func (s *Server) Routes() *http.ServeMux {
 	m := http.NewServeMux()
-
-	m.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
-	m.HandleFunc("GET /readiness", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ready": true})
-	})
-
-	// The root says what this is and that there is nothing to do here. There
-	// used to be a page on which a holder typed their mailbox details; the
-	// wallet's approval screen is now the only place a secret is typed. The
-	// root still answers, and answers 200, so a probe or a person landing on
-	// the host is told where things happen rather than shown a 404.
-	m.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"service": "Privasys Mail Connector",
-			"note": "Reads one mailbox for one attested agent, under a capability the holder approved on their device. " +
-				"There is no page to connect a mailbox on: the holder's wallet asks for the details on the approval screen, " +
-				"and this service keeps them only in memory.",
-		})
-	})
+	s.svc.Mount(m)
 
 	// The permission each tool needs. Reading and writing are different
 	// sentences on the holder's approval screen, so they are different checks
@@ -234,14 +237,6 @@ func (s *Server) Routes() *http.ServeMux {
 	s.tool(m, "/tools/delete_draft", grant.Write, s.deleteDraft)
 	s.tool(m, "/tools/changes", grant.Read, s.changes)
 
-	s.capabilityRoutes(m)
-	// The shared list and revoke the wallet speaks, over the same store as this
-	// service's own /v1/apps pair. See capability_holder.go.
-	s.capabilityHolderRoutes(m)
-	s.configureRoutes(m)
-	s.extensionsRoute(m)
-	s.mcpRoutes(m)
-
 	return m
 }
 
@@ -249,87 +244,38 @@ func (s *Server) Routes() *http.ServeMux {
 // returns something JSON-encodable.
 type handler func(ctx context.Context, sub string, drv mail.Driver, body json.RawMessage) (any, error)
 
-// mcpToolPrefix is where an agent's MCP client calls a tool. Every tool is
-// registered at both paths from ONE closure, so the two cannot drift: the
-// acting-user check, the configure gate and the capability check are the same
-// code, not equivalent code.
-const mcpToolPrefix = "/api/v1/mcp/tools/"
-
+// tool registers one tool through the shell, which does the acting-user
+// check, the configure gate, the credential check and the capability check
+// at both paths from one closure. What is added here is the mailbox: opened
+// or reused for the subject, and the driver's own errors given their status.
 func (s *Server) tool(m *http.ServeMux, path string, need grant.Permission, h handler) {
-	call := func(w http.ResponseWriter, r *http.Request) {
-		sub := strings.TrimSpace(r.Header.Get(SubjectHeader))
-		if sub == "" {
-			// Refused, not defaulted. There is no "the user" to fall back to,
-			// and guessing one would be guessing whose mail to open.
-			writeErr(w, http.StatusUnauthorized,
-				"this call carries no acting user; the platform must assert one")
-			return
-		}
-		if !s.configured() {
-			writeErr(w, http.StatusServiceUnavailable, errNotConfigured.Error())
-			return
-		}
-		// The credential BEFORE the capability. After a restart both are
-		// gone, and what the agent must do then is ask the holder's device
-		// afresh (ask_again), which is a different instruction from "ask the
-		// user to approve": a plain request would find the device's record
-		// still saying approved and change nothing.
-		if _, err := s.credStore().Get(r.Context(), sub); err != nil {
-			if errors.Is(err, store.ErrNoAccount) {
-				credentialNeeded(w)
-				return
-			}
-			writeErr(w, http.StatusInternalServerError, "the mail connector could not read this holder's mailbox record: "+err.Error())
-			return
-		}
-		if err := s.authorise(r, sub, need); err != nil {
-			writeErr(w, http.StatusForbidden, err.Error())
-			return
-		}
-		var body json.RawMessage
-		if r.Body != nil {
-			body, _ = readLimited(r, 1<<20)
-		}
-		drv, err := s.driverFor(r.Context(), sub)
+	s.svc.Tool(m, path, need, func(ctx context.Context, sub string, body json.RawMessage) (any, error) {
+		drv, err := s.driverFor(ctx, sub)
 		if err != nil {
 			if errors.Is(err, store.ErrNoAccount) {
-				credentialNeeded(w) // forgotten between the check above and here
-				return
+				return nil, err // forgotten since the shell looked; the same refusal
 			}
-			writeErr(w, http.StatusBadGateway, "the mailbox is not reachable: "+err.Error())
-			return
+			return nil, connector.Errorf(http.StatusBadGateway, "the mailbox is not reachable: %v", err)
 		}
-		out, err := h(r.Context(), sub, drv, body)
+		out, err := h(ctx, sub, drv, body)
 		if err != nil {
-			if errors.Is(err, store.ErrNoAccount) {
-				// The change feed opens its own connection inside the handler,
-				// and answers the same way as every other tool.
-				credentialNeeded(w)
-				return
-			}
-			status := http.StatusBadGateway
 			switch {
+			case errors.Is(err, store.ErrNoAccount):
+				return nil, err
 			case errors.Is(err, mail.ErrNotFound):
-				status = http.StatusNotFound
+				return nil, connector.Errorf(http.StatusNotFound, "%v", err)
 			case errors.Is(err, mail.ErrUnreadable):
-				status = http.StatusUnprocessableEntity
+				return nil, connector.Errorf(http.StatusUnprocessableEntity, "%v", err)
 			}
-			writeErr(w, status, err.Error())
-			return
+			return nil, err
 		}
-		writeJSON(w, http.StatusOK, out)
-	}
-
-	m.HandleFunc("POST "+path, call)
-	// The same closure, registered again where an agent's MCP client looks.
-	// Derived from the manifest path rather than passed separately, so a tool
-	// cannot end up mounted under one name and callable under another.
-	m.HandleFunc("POST "+mcpToolPrefix+strings.TrimPrefix(path, "/tools/"), call)
+		return out, nil
+	})
 }
 
 // Handler builds the http.Handler for this server.
 func (s *Server) Handler() http.Handler {
-	return logging(s.Routes())
+	return web.Logging(s.Routes())
 }
 
 // ---------------------------------------------------------------- tools
@@ -354,7 +300,7 @@ func (r listReq) options() mail.ListOptions {
 
 func (s *Server) listMessages(ctx context.Context, _ string, drv mail.Driver, body json.RawMessage) (any, error) {
 	var req listReq
-	if err := decode(body, &req); err != nil {
+	if err := web.Decode(body, &req); err != nil {
 		return nil, err
 	}
 	return drv.List(ctx, req.options())
@@ -367,7 +313,7 @@ type idReq struct {
 
 func (s *Server) getMessage(ctx context.Context, _ string, drv mail.Driver, body json.RawMessage) (any, error) {
 	var req idReq
-	if err := decode(body, &req); err != nil {
+	if err := web.Decode(body, &req); err != nil {
 		return nil, err
 	}
 	if req.ID == "" {
@@ -378,7 +324,7 @@ func (s *Server) getMessage(ctx context.Context, _ string, drv mail.Driver, body
 
 func (s *Server) getThread(ctx context.Context, _ string, drv mail.Driver, body json.RawMessage) (any, error) {
 	var req idReq
-	if err := decode(body, &req); err != nil {
+	if err := web.Decode(body, &req); err != nil {
 		return nil, err
 	}
 	if req.ID == "" {
@@ -396,7 +342,7 @@ func (s *Server) search(ctx context.Context, _ string, drv mail.Driver, body jso
 		listReq
 		Query string `json:"query"`
 	}
-	if err := decode(body, &req); err != nil {
+	if err := web.Decode(body, &req); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(req.Query) == "" {
@@ -410,7 +356,7 @@ func (s *Server) listSent(ctx context.Context, _ string, drv mail.Driver, body j
 		Limit     int `json:"limit"`
 		SinceDays int `json:"since_days"`
 	}
-	if err := decode(body, &req); err != nil {
+	if err := web.Decode(body, &req); err != nil {
 		return nil, err
 	}
 	var since time.Time
@@ -436,7 +382,7 @@ func (s *Server) setLabels(ctx context.Context, _ string, drv mail.Driver, body 
 		Add    []string `json:"add"`
 		Remove []string `json:"remove"`
 	}
-	if err := decode(body, &req); err != nil {
+	if err := web.Decode(body, &req); err != nil {
 		return nil, err
 	}
 	if req.ID == "" {
@@ -458,7 +404,7 @@ func (s *Server) markRead(ctx context.Context, _ string, drv mail.Driver, body j
 		ID   string `json:"id"`
 		Read *bool  `json:"read"`
 	}
-	if err := decode(body, &req); err != nil {
+	if err := web.Decode(body, &req); err != nil {
 		return nil, err
 	}
 	if req.ID == "" {
@@ -480,7 +426,7 @@ func (s *Server) createDraft(ctx context.Context, _ string, drv mail.Driver, bod
 		Body    string   `json:"body"`
 		CC      []string `json:"cc"`
 	}
-	if err := decode(body, &req); err != nil {
+	if err := web.Decode(body, &req); err != nil {
 		return nil, err
 	}
 	if req.ReplyTo == "" || strings.TrimSpace(req.Body) == "" {
@@ -506,7 +452,7 @@ func (s *Server) createDraft(ctx context.Context, _ string, drv mail.Driver, bod
 
 func (s *Server) deleteDraft(ctx context.Context, _ string, drv mail.Driver, body json.RawMessage) (any, error) {
 	var req idReq
-	if err := decode(body, &req); err != nil {
+	if err := web.Decode(body, &req); err != nil {
 		return nil, err
 	}
 	if req.ID == "" {
@@ -519,23 +465,16 @@ func (s *Server) deleteDraft(ctx context.Context, _ string, drv mail.Driver, bod
 }
 
 func (s *Server) changes(ctx context.Context, sub string, _ mail.Driver, body json.RawMessage) (any, error) {
-	var req struct {
-		Since   string `json:"since"`
-		WaitSec int    `json:"wait_seconds"`
-	}
-	if err := decode(body, &req); err != nil {
+	var req feed.Request
+	if err := web.Decode(body, &req); err != nil {
 		return nil, err
-	}
-	wait := time.Duration(req.WaitSec) * time.Second
-	if wait > 60*time.Second {
-		wait = 60 * time.Second // the caller long-polls; it does not camp
 	}
 	// Not the tools' connection: this one parks in IDLE for the whole wait.
 	drv, err := s.feedDriverFor(ctx, sub)
 	if err != nil {
 		return nil, err
 	}
-	changes, cursor, err := drv.Changes(ctx, req.Since, wait)
+	changes, cursor, err := drv.Changes(ctx, req.Since, req.Wait())
 	if err != nil {
 		return nil, err
 	}
@@ -548,61 +487,4 @@ func (s *Server) account(ctx context.Context, sub string, _ mail.Driver, _ json.
 		return nil, err
 	}
 	return a.Redacted(), nil
-}
-
-// ---------------------------------------------------------------- plumbing
-
-func decode(body json.RawMessage, v any) error {
-	if len(body) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(body, v); err != nil {
-		return fmt.Errorf("malformed request body: %w", err)
-	}
-	return nil
-}
-
-func readLimited(r *http.Request, n int64) (json.RawMessage, error) {
-	defer r.Body.Close()
-	buf := make([]byte, 0, 4096)
-	tmp := make([]byte, 4096)
-	var total int64
-	for {
-		k, err := r.Body.Read(tmp)
-		if k > 0 {
-			total += int64(k)
-			if total > n {
-				return nil, errors.New("request body too large")
-			}
-			buf = append(buf, tmp[:k]...)
-		}
-		if err != nil {
-			return buf, nil
-		}
-	}
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeErr(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}
-
-// logging records what was called for whom, and never what was in it. A
-// connector's log must not become the copy of the mailbox the design says
-// nobody keeps.
-func logging(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		sub := r.Header.Get(SubjectHeader)
-		if len(sub) > 8 {
-			sub = sub[:8] + "…"
-		}
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s sub=%s %s", r.Method, r.URL.Path, sub, time.Since(start).Round(time.Millisecond))
-	})
 }

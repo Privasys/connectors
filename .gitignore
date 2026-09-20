@@ -20,3 +20,7 @@ mail/imap-spike.exe
 # A sibling checkout of the RA-TLS client that earlier builds needed, and a
 # workstation may still have beside the module. It is never committed here.
 /ra-tls-clients
+
+# The workspace's own sum file is derived from the modules' and regenerated
+# by any go command; it carries nothing a build needs that go.sum does not.
+/go.work.sum

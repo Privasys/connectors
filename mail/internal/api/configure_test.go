@@ -13,11 +13,12 @@ import (
 	"time"
 
 	"github.com/Privasys/connectors/mail/internal/config"
-	"github.com/Privasys/connectors/mail/internal/grant"
 	"github.com/Privasys/connectors/mail/internal/store"
+	"github.com/Privasys/connectors/sdk/configure"
+	"github.com/Privasys/connectors/sdk/grant"
 )
 
-func configure(t *testing.T, s *Server, body string) *httptest.ResponseRecorder {
+func postConfigure(t *testing.T, s *Server, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodPost, "/configure", strings.NewReader(body))
 	w := httptest.NewRecorder()
@@ -30,7 +31,7 @@ func configure(t *testing.T, s *Server, body string) *httptest.ResponseRecorder 
 // storage peer any more, and a body that tries is simply not read.
 func TestConfigureNeedsNothingAndNamesNoPeer(t *testing.T) {
 	s := freshServer(t)
-	s.SetConfigurable(filepath.Join(t.TempDir(), "config.json"), config.Config{}, false)
+	s.SetConfigurable(configure.NewGate(filepath.Join(t.TempDir(), "config.json"), config.Config{}, false))
 	if s.configured() {
 		t.Fatal("not configured until configure succeeds")
 	}
@@ -38,7 +39,7 @@ func TestConfigureNeedsNothingAndNamesNoPeer(t *testing.T) {
 		t.Fatalf("every tool is held at 503 before configure, got %d", held.Code)
 	}
 
-	w := configure(t, s, `{}`)
+	w := postConfigure(t, s, `{}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("an empty configuration is complete: %d %s", w.Code, w.Body)
 	}
@@ -55,7 +56,7 @@ func TestConfigureNeedsNothingAndNamesNoPeer(t *testing.T) {
 		}
 	}
 
-	if w := configure(t, s, `{"idp_issuer":"http://plain.example"}`); w.Code != http.StatusBadRequest {
+	if w := postConfigure(t, s, `{"idp_issuer":"http://plain.example"}`); w.Code != http.StatusBadRequest {
 		t.Fatalf("an issuer over plain http roots identity in whoever answers the name: %d %s", w.Code, w.Body)
 	}
 }
@@ -66,8 +67,8 @@ func TestConfigureNeedsNothingAndNamesNoPeer(t *testing.T) {
 // deployment no longer trusts named.
 func TestReconfiguringTheIssuerForgetsEveryone(t *testing.T) {
 	s := freshServer(t)
-	s.SetConfigurable(filepath.Join(t.TempDir(), "config.json"), config.Config{}, false)
-	if w := configure(t, s, `{}`); w.Code != http.StatusOK {
+	s.SetConfigurable(configure.NewGate(filepath.Join(t.TempDir(), "config.json"), config.Config{}, false))
+	if w := postConfigure(t, s, `{}`); w.Code != http.StatusOK {
 		t.Fatal(w.Body)
 	}
 	if w := mintWith(t, s, "holder-1", map[string]any{"user": "me@example.org", "password": "pw", "host": "imap.example.org"}); w.Code != http.StatusOK {
@@ -78,7 +79,7 @@ func TestReconfiguringTheIssuerForgetsEveryone(t *testing.T) {
 	s.conns["holder-1"] = &conn{drv: drv, used: time.Now()}
 	s.mu.Unlock()
 
-	if w := configure(t, s, `{}`); w.Code != http.StatusOK {
+	if w := postConfigure(t, s, `{}`); w.Code != http.StatusOK {
 		t.Fatal(w.Body)
 	}
 	if _, err := s.credStore().Get(context.Background(), "holder-1"); err != nil {
@@ -88,7 +89,7 @@ func TestReconfiguringTheIssuerForgetsEveryone(t *testing.T) {
 		t.Fatal("the same settings again closed the mailbox connection")
 	}
 
-	if w := configure(t, s, `{"idp_issuer":"https://other.example"}`); w.Code != http.StatusOK {
+	if w := postConfigure(t, s, `{"idp_issuer":"https://other.example"}`); w.Code != http.StatusOK {
 		t.Fatal(w.Body)
 	}
 	if _, err := s.credStore().Get(context.Background(), "holder-1"); err == nil {
@@ -107,13 +108,9 @@ func TestReconfiguringTheIssuerForgetsEveryone(t *testing.T) {
 // capability, no open mailbox.
 func TestCloseForgetsEverything(t *testing.T) {
 	drv := &fakeDriver{}
-	s := &Server{
-		store:  store.NewMemory(),
-		grants: grant.NewMemory(),
-		conns:  map[string]*conn{"holder-1": {drv: drv, used: time.Now()}},
-		feeds:  map[string]*conn{},
-	}
-	_ = s.store.Put(context.Background(), "holder-1", store.Account{User: "me@example.org", Secret: "pw"})
+	s := New(store.NewMemory(), grant.NewMemory(), true)
+	s.conns["holder-1"] = &conn{drv: drv, used: time.Now()}
+	_ = s.credStore().Put(context.Background(), "holder-1", store.Account{User: "me@example.org", Secret: "pw"})
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}

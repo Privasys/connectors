@@ -1,5 +1,5 @@
 // Copyright (c) Privasys. All rights reserved.
-// Licensed under the GNU Affero General Public License v3.0.
+// Licensed under the Apache License, Version 2.0.
 
 // Package grant is the connector's half of the capability protocol: what the
 // wallet mints when a holder approves, and what every tool call is checked
@@ -14,7 +14,7 @@
 // Three properties are load-bearing, and each one exists because its absence
 // was a real defect somewhere:
 //
-//   - The OWNER is derived, never named. A request may not say whose mailbox
+//   - The OWNER is derived, never named. A request may not say whose resource
 //     it wants; the holder is whoever the wallet authenticated. An app that
 //     could name a tenant could aim a capability at someone else's data while
 //     the approval screen still read truthfully.
@@ -39,13 +39,15 @@ import (
 	"time"
 )
 
-// Kind is the only capability this service issues. The vocabulary is closed on
-// the wallet side too, and both ends must agree or the holder is shown a
-// sentence that does not match what is enforced.
-const Kind = "mail.mailbox"
+// A connector issues ONE kind of capability (a mailbox, a calendar), named by
+// the connector and passed to Validate. The vocabulary is closed on the wallet
+// side too, and both ends must agree or the holder is shown a sentence that
+// does not match what is enforced.
 
-// Permission is the closed vocabulary. Write means labels and drafts. There is
-// deliberately no send permission, because there is no send.
+// Permission is the closed vocabulary. What write means is the connector's to
+// say (labels and drafts for mail, a tentative event for a calendar). There is
+// deliberately no send, no invite and no delete-anything permission, because
+// there is no such method on any driver.
 type Permission string
 
 const (
@@ -155,11 +157,11 @@ type Request struct {
 	Req map[string]any `json:"request"`
 
 	// Setup is what the HOLDER typed on the wallet's approval screen, the
-	// answers to the schema this service declared (plan §3.7): the mailbox
-	// address and password. Composed by the wallet from the holder's own
-	// input, never by the requesting app, and used to connect the mailbox
-	// before the capability is minted. Absent when the holder had nothing
-	// to answer.
+	// answers to the schema the connector declared (plan §3.7): an address
+	// and a password, or the code from a sign-in the wallet held the browser
+	// for. Composed by the wallet from the holder's own input, never by the
+	// requesting app, and used to connect the credential before the
+	// capability is minted. Absent when the holder had nothing to answer.
 	Setup map[string]any `json:"setup,omitempty"`
 }
 
@@ -169,13 +171,14 @@ type Request struct {
 // business holding anyone's mail.
 const maxLifetime = 180 * 24 * time.Hour
 
-// Validate checks everything that must be true before a grant is minted.
-func (r Request) Validate(now time.Time) (subject string, perms []Permission, err error) {
+// Validate checks everything that must be true before a grant is minted. kind
+// is the one capability kind the connector issues.
+func (r Request) Validate(now time.Time, kind string) (subject string, perms []Permission, err error) {
 	if strings.TrimSpace(r.Nonce) == "" {
 		return "", nil, fmt.Errorf("%w: no nonce", ErrBadInput)
 	}
-	if r.Kind != Kind {
-		return "", nil, fmt.Errorf("%w: this service issues %q, not %q", ErrBadInput, Kind, r.Kind)
+	if r.Kind != kind {
+		return "", nil, fmt.Errorf("%w: this service issues %q, not %q", ErrBadInput, kind, r.Kind)
 	}
 	subject, err = NormaliseSubject(r.SubjectAppID)
 	if err != nil {
@@ -197,10 +200,10 @@ func (r Request) Validate(now time.Time) (subject string, perms []Permission, er
 	// requesting app compose a body that could name a tenant, so an app could
 	// aim the capability at data the holder happens to have rights in. The
 	// holder would read a truthful screen and approve the wrong thing.
-	for _, forbidden := range []string{"user", "sub", "subject", "account", "mailbox", "tenant", "owner", "holder", "email", "address"} {
+	for _, forbidden := range []string{"user", "sub", "subject", "account", "mailbox", "calendar", "tenant", "owner", "holder", "email", "address"} {
 		if _, ok := r.Req[forbidden]; ok {
 			return "", nil, fmt.Errorf(
-				"%w: a request may not name whose mailbox it wants (%q); the holder is whoever approved it",
+				"%w: a request may not name whose resource it wants (%q); the holder is whoever approved it",
 				ErrBadInput, forbidden)
 		}
 	}
@@ -218,19 +221,31 @@ type Store interface {
 	// Find returns the live grant for one app acting for one user.
 	Find(ctx context.Context, userSub, subject string) (Grant, error)
 	List(ctx context.Context, userSub string) ([]Grant, error)
+	// Revoke ends one of the holder's grants. ErrGone says this holder
+	// already revoked that id; ErrNoGrant says it was never theirs, and is
+	// deliberately the same answer as "never existed", because whether an id
+	// exists is not something to confirm to a caller who does not hold it.
 	Revoke(ctx context.Context, userSub, id string) error
+	// Close forgets every grant of every holder; the store stays usable.
+	Close() error
 }
+
+// ErrGone is a revoke of something the same holder already revoked.
+var ErrGone = errors.New("the capability was already revoked")
 
 // Memory is the in-process store, and the only one. It loses grants on
 // restart, which for a capability is the safe direction to fail, and the
 // price the design accepts (2026-09-17): the holder is asked once more on
 // their phone and the credential comes back with the capability.
 type Memory struct {
-	mu sync.Mutex
-	by map[string][]Grant // userSub -> grants
+	mu   sync.Mutex
+	by   map[string][]Grant         // userSub -> grants
+	gone map[string]map[string]bool // userSub -> ids this holder revoked
 }
 
-func NewMemory() *Memory { return &Memory{by: map[string][]Grant{}} }
+func NewMemory() *Memory {
+	return &Memory{by: map[string][]Grant{}, gone: map[string]map[string]bool{}}
+}
 
 func (m *Memory) Mint(_ context.Context, userSub string, g Grant) (Grant, error) {
 	if strings.TrimSpace(userSub) == "" {
@@ -298,8 +313,42 @@ func (m *Memory) Revoke(_ context.Context, userSub, id string) error {
 	}
 	m.by[userSub] = kept
 	if !found {
+		if m.gone[userSub][id] {
+			return ErrGone
+		}
 		return ErrNoGrant
 	}
+	m.remember(userSub, id)
+	return nil
+}
+
+// remember keeps the id of a revoked grant, per holder, so a second revoke of
+// the same one can be told from a revoke of something that was never theirs.
+// Bounded: the ids are only there to answer 410 rather than 404 to a wallet
+// that retried, and a holder does not revoke a thousand times.
+func (m *Memory) remember(userSub, id string) {
+	if m.gone[userSub] == nil {
+		m.gone[userSub] = map[string]bool{}
+	}
+	if len(m.gone[userSub]) >= goneKept {
+		for k := range m.gone[userSub] {
+			delete(m.gone[userSub], k)
+			break
+		}
+	}
+	m.gone[userSub][id] = true
+}
+
+// goneKept bounds the revoked ids remembered per holder.
+const goneKept = 64
+
+// Close forgets every grant. The store stays usable, so a reconfiguration
+// forgets everyone without replacing it.
+func (m *Memory) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.by = map[string][]Grant{}
+	m.gone = map[string]map[string]bool{}
 	return nil
 }
 

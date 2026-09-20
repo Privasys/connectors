@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Privasys/connectors/mail/internal/grant"
+	"github.com/Privasys/connectors/mail/internal/mail"
 	"github.com/Privasys/connectors/mail/internal/store"
+	"github.com/Privasys/connectors/sdk/grant"
 )
 
 // The order of refusals for a holder is credential first, approval second.
@@ -41,7 +42,7 @@ func TestConnectedHolderWithoutGrantIsToldToApprove(t *testing.T) {
 		t.Fatal("a connected holder without a grant must be refused")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "not approved") || !strings.Contains(msg, "request_access for their "+grant.Kind) ||
+	if !strings.Contains(msg, "not approved") || !strings.Contains(msg, "request_access for their "+mail.Kind) ||
 		!strings.Contains(msg, "Never ask for a password yourself") {
 		t.Fatalf("a connected holder without a grant is told about the approval, and the password stays out of the chat: %q", msg)
 	}

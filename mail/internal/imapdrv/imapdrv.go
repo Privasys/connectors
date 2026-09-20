@@ -32,7 +32,7 @@ import (
 
 	"github.com/Privasys/connectors/mail/internal/mail"
 	"github.com/Privasys/connectors/mail/internal/mailtext"
-	"github.com/Privasys/connectors/mail/internal/redact"
+	"github.com/Privasys/connectors/sdk/redact"
 )
 
 const (

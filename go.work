@@ -1,0 +1,11 @@
+// The workspace ties the modules of this repository together for a local
+// build, so `go build ./...` at the root covers every one of them and a
+// connector compiles against the sdk beside it rather than a published
+// version. Each connector's go.mod also carries a replace directive, because
+// an image build copies the module and the sdk without this file.
+go 1.26
+
+use (
+	./sdk
+	./mail
+)

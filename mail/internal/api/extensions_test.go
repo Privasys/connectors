@@ -13,9 +13,10 @@ import (
 	"testing"
 
 	"github.com/Privasys/connectors/mail/internal/config"
+	"github.com/Privasys/connectors/sdk/configure"
 )
 
-func extensions(t *testing.T, s *Server) []extensionEntry {
+func extensions(t *testing.T, s *Server) []configure.Extension {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodGet, "/.well-known/attestation-extensions", nil)
 	w := httptest.NewRecorder()
@@ -23,7 +24,7 @@ func extensions(t *testing.T, s *Server) []extensionEntry {
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
-	var got []extensionEntry
+	var got []configure.Extension
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("the runtime parses this as a JSON array: %v (%s)", err, w.Body)
 	}
@@ -35,7 +36,7 @@ func extensions(t *testing.T, s *Server) []extensionEntry {
 // which happens before an operator has configured anything.
 func TestExtensionsEmptyBeforeConfigure(t *testing.T) {
 	s, _ := newTestServer(t)
-	s.SetConfigurable("/tmp/x", config.Config{}, false)
+	s.SetConfigurable(configure.NewGate("/tmp/x", config.Config{}, false))
 	if got := extensions(t, s); len(got) != 0 {
 		t.Fatalf("want no claims before configure, got %+v", got)
 	}
@@ -44,14 +45,14 @@ func TestExtensionsEmptyBeforeConfigure(t *testing.T) {
 func TestExtensionsPublishTheConfigDigestAndNothingElse(t *testing.T) {
 	s, _ := newTestServer(t)
 	cfg := config.Config{IdpIssuer: "https://idp.example", IdpAudience: "aud-example"}.Normalised()
-	s.SetConfigurable("/tmp/x", cfg, true)
+	s.SetConfigurable(configure.NewGate("/tmp/x", cfg, true))
 
 	got := extensions(t, s)
 	byOID := map[string]string{}
 	for _, e := range got {
 		byOID[e.OID] = e.Value
 	}
-	if _, ok := byOID[oidConfigDigest]; !ok {
+	if _, ok := byOID[configure.OIDConfigDigest]; !ok {
 		t.Fatalf("no config digest in %+v", got)
 	}
 	// One claim. There is no storage peer, so there is no "peer build
@@ -87,9 +88,9 @@ func TestExtensionsPublishTheConfigDigestAndNothingElse(t *testing.T) {
 func TestConfigDigestChangesWithTheConfiguration(t *testing.T) {
 	digestFor := func(c config.Config) string {
 		s, _ := newTestServer(t)
-		s.SetConfigurable("/tmp/x", c.Normalised(), true)
+		s.SetConfigurable(configure.NewGate("/tmp/x", c.Normalised(), true))
 		for _, e := range extensions(t, s) {
-			if e.OID == oidConfigDigest {
+			if e.OID == configure.OIDConfigDigest {
 				return e.Value
 			}
 		}
@@ -121,7 +122,7 @@ func TestConfigDigestChangesWithTheConfiguration(t *testing.T) {
 // 5.4, because identity is stamped by the measured manager and never
 // self-declared.
 func TestOnlyAppDefinedArcIsUsed(t *testing.T) {
-	if !strings.HasPrefix(oidConfigDigest, "1.3.6.1.4.1.65230.5.4.") {
-		t.Errorf("%s is outside the app-defined arc and would be dropped", oidConfigDigest)
+	if !strings.HasPrefix(configure.OIDConfigDigest, "1.3.6.1.4.1.65230.5.4.") {
+		t.Errorf("%s is outside the app-defined arc and would be dropped", configure.OIDConfigDigest)
 	}
 }

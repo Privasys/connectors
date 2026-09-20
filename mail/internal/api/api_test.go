@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Privasys/connectors/mail/internal/grant"
 	"github.com/Privasys/connectors/mail/internal/mail"
 	"github.com/Privasys/connectors/mail/internal/store"
+	"github.com/Privasys/connectors/sdk/grant"
 )
 
 // fakeStore has one linked account, for one subject.
@@ -72,16 +72,21 @@ func (f *fakeDriver) Close() error { f.closed = true; return nil }
 
 func newTestServer(t *testing.T) (*Server, *fakeDriver) {
 	t.Helper()
+	return newServer(t, false)
+}
+
+// newServer builds a connector over one linked account, with a fake mailbox
+// already pooled for it, enforcing capabilities or not.
+func newServer(t *testing.T, requireGrant bool) (*Server, *fakeDriver) {
+	t.Helper()
 	drv := &fakeDriver{msg: mail.Message{
 		Header: mail.Header{ID: "m1", From: mail.Address{Addr: "alice@example.com"}, Repliable: true},
 		Text:   "hello",
 	}}
-	s := &Server{
-		store:  fakeStore{subs: map[string]store.Account{"user-1": {Provider: "imap", User: "u@example.com", Secret: "super-secret-app-password"}}},
-		grants: grant.NewMemory(),
-		conns:  map[string]*conn{"user-1": {drv: drv, used: time.Now()}},
-		feeds:  map[string]*conn{},
-	}
+	s := New(
+		fakeStore{subs: map[string]store.Account{"user-1": {Provider: "imap", User: "u@example.com", Secret: "super-secret-app-password"}}},
+		grant.NewMemory(), requireGrant)
+	s.conns["user-1"] = &conn{drv: drv, used: time.Now()}
 	return s, drv
 }
 

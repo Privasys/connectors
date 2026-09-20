@@ -18,6 +18,11 @@ import (
 	"time"
 )
 
+// Kind is the one capability this connector issues. The vocabulary is closed
+// on the wallet side too, and both ends must agree or the holder is shown a
+// sentence that does not match what is enforced.
+const Kind = "mail.mailbox"
+
 // Permission mirrors the wallet's closed vocabulary. A driver call site checks
 // it before acting, so a grant that says read cannot label or draft.
 type Permission string
