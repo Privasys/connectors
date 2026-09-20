@@ -9,18 +9,47 @@ permissions:
   contents: read
 
 jobs:
-  mail:
+  # The sdk is its own module, Apache-2.0, and every connector builds against
+  # the copy beside it. It is tested on its own so a change to the shell fails
+  # here before it fails in a connector.
+  sdk:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: mail
+        working-directory: sdk
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
-          cache-dependency-path: mail/go.sum
+          cache-dependency-path: sdk/go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -race -count=1
+
+  connector:
+    strategy:
+      fail-fast: false
+      matrix:
+        connector: [mail, calendar]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ matrix.connector }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache-dependency-path: ${{ matrix.connector }}/go.sum
 
       - name: Build
         run: go build ./...
@@ -34,7 +63,8 @@ jobs:
       # The tool catalogue reaches the control plane as an image label. If a
       # tool is added to the manifest without a route, an agent gets a 404
       # from something the catalogue promised, so the two are checked against
-      # each other rather than trusted to stay in step.
+      # each other rather than trusted to stay in step. `configure` is the
+      # sdk's route and is not looked for here.
       - name: Manifest and routes agree
         run: |
           python3 - <<'PY'
@@ -52,7 +82,7 @@ jobs:
                       continue
                   value = line[i + len(marker):].split('"')[0]
                   routed.add(value.split(" ")[-1])
-          declared = {t["endpoint"] for t in manifest["tools"]}
+          declared = {t["endpoint"] for t in manifest["tools"] if t.get("role") != "config"}
           missing = declared - routed
           if not routed:
               print("the check matched no routes at all, so it is broken")

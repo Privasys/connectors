@@ -239,3 +239,13 @@ arrives.
 ## Not built yet
 
 The Microsoft Graph and Gmail API drivers, and deployment to a fleet.
+
+## Where the code lives
+
+What is the Mail Connector's is the IMAP driver, the text handling, the
+server discovery, the setup schema, the probe and the tool list. Who the
+holder is, who a call acts for, the capability check, the credential in
+memory and its refusal, the wallet-facing routes, the catalogue and the
+configure gate are the sdk's (`../sdk`), the same code in every connector
+rather than equivalent code, and the root README says why that split is a
+rule rather than a tidiness.

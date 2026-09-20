@@ -1,11 +1,16 @@
 name: Publish
 
-# Publishes the measured Mail Connector image to GHCR, the way the other
-# platform apps do: GITHUB_TOKEN plus packages:write, no personal token.
+# Publishes the measured connector images to GHCR, the way the other platform
+# apps do: GITHUB_TOKEN plus packages:write, no personal token.
 #
-# The image is self-contained. The tool catalogue is passed in as a build
-# argument read from privasys.json, so the image that reaches the registry is
-# the one the control plane will learn the catalogue from.
+# Each image is self-contained. The tool catalogue is passed in as a build
+# argument read from the connector's privasys.json, so the image that reaches
+# the registry is the one the control plane will learn the catalogue from.
+#
+# A push builds the connectors it touched: a change under mail/ builds the
+# Mail Connector, one under calendar/ the Calendar Connector, and one under
+# sdk/ both, because the shell is part of what each image is measured to do.
+# A manual run builds both.
 #
 # Deploying to an enclave is a separate step: versions create, stage, promote
 # and deploy through the management service. Promoting takes a human approval
@@ -16,6 +21,8 @@ on:
     branches: [main]
     paths:
       - 'mail/**'
+      - 'calendar/**'
+      - 'sdk/**'
       - '.github/workflows/publish.yml'
   workflow_dispatch:
 
@@ -24,8 +31,36 @@ permissions:
   packages: write
 
 jobs:
+  changes:
+    name: Which connectors changed
+    runs-on: ubuntu-24.04
+    outputs:
+      mail: ${{ steps.which.outputs.mail }}
+      calendar: ${{ steps.which.outputs.calendar }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - id: which
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            changed="mail/ calendar/ sdk/"
+          else
+            changed=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}")
+          fi
+          echo "$changed"
+          mail=false; calendar=false
+          case "$changed" in *sdk/*|*.github/workflows/publish.yml*) mail=true; calendar=true ;; esac
+          case "$changed" in *mail/*) mail=true ;; esac
+          case "$changed" in *calendar/*) calendar=true ;; esac
+          echo "mail=$mail" >> "$GITHUB_OUTPUT"
+          echo "calendar=$calendar" >> "$GITHUB_OUTPUT"
+
   mail:
     name: Build and push the Mail Connector
+    needs: changes
+    if: needs.changes.outputs.mail == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -49,8 +84,8 @@ jobs:
       - id: build
         uses: docker/build-push-action@v7
         with:
-          # The repo root, not mail/: the Dockerfile copies mail/ by its path
-          # in the repository, the same way build.sh and CI do.
+          # The repo root, not mail/: the Dockerfile copies mail/ and sdk/ by
+          # their paths in the repository, the same way build.sh and CI do.
           context: .
           file: mail/Dockerfile
           push: true
@@ -67,3 +102,40 @@ jobs:
         run: |
           echo "Deploy this exact image:"
           echo "  ghcr.io/privasys/mail-connector@${{ steps.build.outputs.digest }}"
+
+  calendar:
+    name: Build and push the Calendar Connector
+    needs: changes
+    if: needs.changes.outputs.calendar == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: manifest
+        working-directory: calendar
+        run: |
+          MANIFEST=$(jq -c . privasys.json)
+          echo "value=$MANIFEST" >> "$GITHUB_OUTPUT"
+
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: calendar/Dockerfile
+          push: true
+          build-args: |
+            MANIFEST=${{ steps.manifest.outputs.value }}
+          tags: |
+            ghcr.io/privasys/calendar-connector:latest
+            ghcr.io/privasys/calendar-connector:${{ github.sha }}
+
+      - name: Report the digest
+        run: |
+          echo "Deploy this exact image:"
+          echo "  ghcr.io/privasys/calendar-connector@${{ steps.build.outputs.digest }}"
