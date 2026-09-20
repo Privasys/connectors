@@ -1,0 +1,7 @@
+github.com/emersion/go-ical v0.0.0-20250609112844-439c63cef608 h1:5XWaET4YAcppq3l1/Yh2ay5VmQjUdq6qhJuucdGbmOY=
+github.com/emersion/go-ical v0.0.0-20250609112844-439c63cef608/go.mod h1:BEksegNspIkjCQfmzWgsgbu6KdeJ/4LwUZs7DMBzjzw=
+github.com/emersion/go-vcard v0.0.0-20241024213814-c9703dde27ff/go.mod h1:HMJKR5wlh/ziNp+sHEDV2ltblO4JD2+IdDOWtGcQBTM=
+github.com/emersion/go-webdav v0.7.1-0.20260628102823-c16f8a9a132c h1:2nsm64nB9dmM0cg2oPZoPgFUy4bY9Z9b6N1KnppHxL0=
+github.com/emersion/go-webdav v0.7.1-0.20260628102823-c16f8a9a132c/go.mod h1:/CletBm2Vo0CX6I20VQsoRkkX1CzzNCK1PNCqKW//iQ=
+github.com/teambition/rrule-go v1.8.2 h1:lIjpjvWTj9fFUZCmuoVDrKVOtdiyzbzc93qTmRVe/J8=
+github.com/teambition/rrule-go v1.8.2/go.mod h1:Ieq5AbrKGciP1V//Wq8ktsTXwSwJHDD5mD/wLBGl3p4=

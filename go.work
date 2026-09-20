@@ -6,6 +6,7 @@
 go 1.26
 
 use (
-	./sdk
+	./calendar
 	./mail
+	./sdk
 )
