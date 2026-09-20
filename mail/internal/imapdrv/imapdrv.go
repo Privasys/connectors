@@ -3,12 +3,14 @@
 
 // Package imapdrv implements mail.Driver over IMAP.
 //
-// IMAP is the first driver, and for a while the only one that matters,
-// because it is the only mailbox path with no vendor standing in front of it.
-// A draft written here threads correctly in Gmail's own interface and a label
-// applied here shows in Gmail's own sidebar, both proved against a real
-// mailbox, so the connector can serve a real user with no API key, no OAuth
-// verification and no annual security assessment.
+// IMAP is the one mailbox protocol every provider speaks, so it is the one
+// driver: a draft written here threads correctly in Gmail's own interface
+// and a label applied here shows in Gmail's own sidebar, both proved against
+// a real mailbox. What differs per provider is only how the mailbox is
+// entered. A provider we reach directly takes an app password with LOGIN;
+// Gmail and Microsoft 365 take an OAuth access token with SASL XOAUTH2
+// (xoauth2.go), minted by the caller from a sign-in the holder did in their
+// browser, because both are retiring passwords over IMAP.
 //
 // Everything unusual in this file is load-bearing and the comments say why.
 // The short version: never ask for BODY[TEXT], always be able to skip a
@@ -48,16 +50,57 @@ const (
 	snippetLen = 160
 )
 
-// Config is one mailbox.
+// Config is one mailbox, and how it is entered: with a password (LOGIN, for
+// a provider we reach directly) or with an OAuth access token (SASL XOAUTH2,
+// for Gmail and Microsoft 365). Exactly one of Password and Token is set.
 type Config struct {
 	Host     string // host:port, e.g. imap.gmail.com:993
 	User     string
-	Password string // app password today; XOAUTH2 when the OAuth drivers land
+	Password string // an app password, sent with LOGIN
+
+	// Token, when set, is asked for a live access token at EVERY dial,
+	// including the reconnects a long read goes through, so a connection
+	// re-made after an hour carries a token that is still valid rather than
+	// the one the mailbox was first opened with. The caller refreshes behind
+	// it; the driver never sees a refresh token.
+	Token func(ctx context.Context) (string, error)
 
 	// OwnDomains lets a caller tell colleagues from customers. Passed in
 	// rather than guessed, because a hardcoded list is wrong for everyone
 	// except whoever wrote it.
 	OwnDomains []string
+}
+
+// tokenWait bounds the mint of an access token at a dial. A reconnect
+// happens inside a read with no context of its own, so the bound is here.
+const tokenWait = 30 * time.Second
+
+// login enters the mailbox on a fresh connection, with whichever credential
+// the config carries. Every failure wraps ErrLogin: the server answered and
+// refused, so trying another server would not help.
+func (d *Driver) login(cl *imapclient.Client) error {
+	if d.cfg.Token == nil {
+		if err := cl.Login(d.cfg.User, d.cfg.Password).Wait(); err != nil {
+			return fmt.Errorf("login as %s: %w: %w", d.cfg.User, ErrLogin, err)
+		}
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), tokenWait)
+	defer cancel()
+	token, err := d.cfg.Token(ctx)
+	if err != nil {
+		// Not ErrLogin: the provider's token endpoint, not the mailbox,
+		// is what failed, and the caller's own sentence for that is better
+		// than "refused".
+		return fmt.Errorf("access token for %s: %w", d.cfg.User, err)
+	}
+	if err := cl.Authenticate(newXoauth2Client(d.cfg.User, token)); err != nil {
+		if errors.Is(err, ErrLogin) {
+			return fmt.Errorf("authenticate as %s: %w", d.cfg.User, err)
+		}
+		return fmt.Errorf("authenticate as %s: %w: %w", d.cfg.User, ErrLogin, err)
+	}
+	return nil
 }
 
 // Driver is a live IMAP mailbox. Safe for concurrent use: IMAP is a stateful
@@ -110,9 +153,9 @@ func (d *Driver) connect() error {
 	if err != nil {
 		return fmt.Errorf("dial %s: %w: %w", d.cfg.Host, ErrUnreachable, err)
 	}
-	if err := cl.Login(d.cfg.User, d.cfg.Password).Wait(); err != nil {
+	if err := d.login(cl); err != nil {
 		cl.Close()
-		return fmt.Errorf("login as %s: %w: %w", d.cfg.User, ErrLogin, err)
+		return err
 	}
 	d.cl = cl
 	d.sel = ""
@@ -1069,9 +1112,9 @@ func (d *Driver) connectWithHandler(arrived chan<- uint32) error {
 	if err != nil {
 		return fmt.Errorf("dial %s: %w: %w", d.cfg.Host, ErrUnreachable, err)
 	}
-	if err := cl.Login(d.cfg.User, d.cfg.Password).Wait(); err != nil {
+	if err := d.login(cl); err != nil {
 		cl.Close()
-		return fmt.Errorf("login as %s: %w: %w", d.cfg.User, ErrLogin, err)
+		return err
 	}
 	d.cl = cl
 	d.sel = ""
