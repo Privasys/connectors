@@ -88,8 +88,11 @@ func New(t *testing.T, resource string) *Fake {
 		defer f.mu.Unlock()
 		f.asks = append(f.asks, Asked{Subject: in.Subject, Retry: in.Retry})
 		w.Header().Set("Content-Type", "application/json")
+		// A retry is a user gesture: the runtime asks again whatever it
+		// recorded, which is how a folder withdrawn in Drive is asked for
+		// while the runtime still says approved.
 		switch {
-		case f.approved[in.Subject] != nil:
+		case f.approved[in.Subject] != nil && !in.Retry:
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "already_granted", "capability_id": "cap-" + in.Subject})
 		case f.declined[in.Subject] && !in.Retry:
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "declined"})

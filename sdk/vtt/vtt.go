@@ -258,9 +258,10 @@ func (t *Transcript) Text() string {
 	return b.String()
 }
 
-// Clock formats an offset as hh:mm:ss.
+// Clock formats an offset as hh:mm:ss, floored: the second a line starts
+// in is where a listener would seek to.
 func Clock(d time.Duration) string {
-	d = d.Round(time.Second)
+	d = d.Truncate(time.Second)
 	h := int(d / time.Hour)
 	m := int(d/time.Minute) % 60
 	s := int(d/time.Second) % 60

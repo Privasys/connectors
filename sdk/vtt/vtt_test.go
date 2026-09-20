@@ -95,7 +95,7 @@ func TestZoomPrefixes(t *testing.T) {
 	if len(paras) != 2 || paras[1].Speaker != "Dan" {
 		t.Errorf("paragraphs: %+v", paras)
 	}
-	if !strings.HasPrefix(tr.Text(), "[00:00:01] Carol: Welcome") {
+	if !strings.HasPrefix(tr.Text(), "[00:00:00] Carol: Welcome") {
 		t.Errorf("text: %q", tr.Text())
 	}
 }
