@@ -1,6 +1,6 @@
 module github.com/Privasys/connectors/calendar
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/Privasys/connectors/sdk v0.0.0

@@ -3,7 +3,7 @@
 // connector compiles against the sdk beside it rather than a published
 // version. Each connector's go.mod also carries a replace directive, because
 // an image build copies the module and the sdk without this file.
-go 1.26
+go 1.26.0
 
 use (
 	./calendar
