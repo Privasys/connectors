@@ -60,9 +60,14 @@ func main() {
 		srv.SetVerifier(holder.NewJWKS(cfg.IdpIssuer, cfg.IdpAudience))
 		log.Printf("holders are whoever %s says they are", cfg.IdpIssuer)
 		if cfg.GoogleConfigured() {
-			log.Printf("Google accounts sign in through OAuth client %s", cfg.OAuthClientID)
+			log.Printf("Google accounts sign in through OAuth client %s", cfg.GoogleClientID)
 		} else {
-			log.Print("no Google OAuth client configured: app-password accounts only")
+			log.Print("no Google OAuth client configured: Google accounts cannot be connected here")
+		}
+		if cfg.MicrosoftConfigured() {
+			log.Printf("Microsoft accounts sign in through OAuth client %s", cfg.MicrosoftClientID)
+		} else {
+			log.Print("no Microsoft OAuth client configured: Microsoft accounts cannot be connected here")
 		}
 	} else {
 		log.Print("not configured yet: serving /configure and nothing else")

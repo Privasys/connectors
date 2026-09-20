@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,12 +16,28 @@ import (
 
 	"github.com/Privasys/connectors/calendar/internal/cal"
 	"github.com/Privasys/connectors/calendar/internal/caldavdrv"
+	"github.com/Privasys/connectors/calendar/internal/config"
 	"github.com/Privasys/connectors/calendar/internal/discover"
 	"github.com/Privasys/connectors/calendar/internal/store"
 	"github.com/Privasys/connectors/sdk/caller"
 	"github.com/Privasys/connectors/sdk/grant"
 	"github.com/Privasys/connectors/sdk/holder"
+	"github.com/Privasys/connectors/sdk/provider"
 )
+
+// fakeMX is the DNS the tests see: one custom domain at Google Workspace,
+// one at Microsoft 365, and every other domain hosted elsewhere or unknown.
+func fakeMX(_ context.Context, domain string) ([]*net.MX, error) {
+	switch domain {
+	case "workspace.example":
+		return []*net.MX{{Host: "aspmx.l.google.com."}}, nil
+	case "tenant.example":
+		return []*net.MX{{Host: "tenant-example.mail.protection.outlook.com."}}, nil
+	case "self.example":
+		return []*net.MX{{Host: "mail.self.example."}}, nil
+	}
+	return nil, errors.New("no such domain")
+}
 
 const testApp = "590ebdc31b63401fbbb822d5f3886c5e"
 
@@ -115,7 +132,8 @@ type rig struct {
 func newRig(t *testing.T, requireGrant bool) *rig {
 	t.Helper()
 	r := &rig{s: New(store.NewMemory(), grant.NewMemory(), requireGrant)}
-	r.s.resolver = &discover.Resolver{} // offline: guesses only, nothing is Google but gmail
+	r.s.resolver = &discover.Resolver{} // offline: guesses only
+	r.s.who = &provider.Resolver{LookupMX: fakeMX}
 	r.s.open = func(ctx context.Context, cfg caldavdrv.Config) (cal.Driver, error) {
 		if cfg.Token != nil {
 			tok, err := cfg.Token(ctx)
@@ -390,7 +408,7 @@ func TestNoCredentialNamesTheKind(t *testing.T) {
 func TestSetupAsksTheAddressFirst(t *testing.T) {
 	r := newRig(t, true)
 	w := r.do(http.MethodGet, "/v1/capabilities/setup", asHolder("new"), "")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"needed":true`) || strings.Contains(w.Body.String(), "password") {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"needed":true`) || strings.Contains(w.Body.String(), `"password":`) || strings.Contains(w.Body.String(), `"grant":`) {
 		t.Fatalf("first step: %d %s", w.Code, w.Body)
 	}
 	w = r.do(http.MethodPost, "/v1/capabilities", asHolder("new"), mintBody(map[string]any{"user": "me@example.org"}))
@@ -398,7 +416,7 @@ func TestSetupAsksTheAddressFirst(t *testing.T) {
 		t.Fatalf("second step for an ordinary address is the app password: %d %s", w.Code, w.Body)
 	}
 	w = r.do(http.MethodPost, "/v1/capabilities", asHolder("new"), mintBody(map[string]any{"user": "not-an-address"}))
-	if w.Code != http.StatusPreconditionRequired || strings.Contains(w.Body.String(), "password") {
+	if w.Code != http.StatusPreconditionRequired || strings.Contains(w.Body.String(), `"password":`) {
 		t.Fatalf("an address without a domain is asked again: %d %s", w.Code, w.Body)
 	}
 }
@@ -437,32 +455,66 @@ func TestPasswordSetupProvesAgainstTheServerFound(t *testing.T) {
 	}
 }
 
-// A Google address gets the sign-in button, with a start URL on this host,
-// only when a client is configured.
-func TestGoogleSetupDrawsTheSignInButton(t *testing.T) {
+// The address decides the second step. A Google or a Microsoft address,
+// by its own domain or by its MX, gets the sign-in button for that
+// provider with a start URL on this host, only when a client is
+// configured; without one the answer is a sentence and nothing to fill. A
+// custom domain hosted elsewhere gets the app password.
+func TestSetupBranchesOnWhoHostsTheAddress(t *testing.T) {
 	r := newRig(t, true)
-	w := r.do(http.MethodPost, "/v1/capabilities", asHolder("g"), mintBody(map[string]any{"user": "me@gmail.com"}))
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("no OAuth client: %d %s", w.Code, w.Body)
-	}
-	r.s.flow.SetClient("cid", "csecret")
-	w = r.do(http.MethodPost, "/v1/capabilities", asHolder("g"), mintBody(map[string]any{"user": "me@gmail.com"}))
-	if w.Code != http.StatusPreconditionRequired {
-		t.Fatalf("second step for Google: %d %s", w.Code, w.Body)
-	}
-	var got struct {
+	type elicit struct {
 		Elicit struct {
-			Schema struct {
+			Message string `json:"message"`
+			Schema  struct {
 				Properties map[string]map[string]any `json:"properties"`
 			} `json:"requestedSchema"`
 		} `json:"elicit"`
 	}
-	decode(t, w, &got)
-	x, _ := got.Elicit.Schema.Properties["grant"]["x-privasys-oauth"].(map[string]any)
-	if x["provider"] != "Google" || x["start_url"] != "https://cal.apps.example/v1/oauth/start?kind=calendar.events" {
-		t.Fatalf("the sign-in property: %+v", got.Elicit.Schema.Properties)
+	ask := func(user string) (int, elicit, string) {
+		w := r.do(http.MethodPost, "/v1/capabilities", asHolder("h"), mintBody(map[string]any{"user": user}))
+		var got elicit
+		if w.Code == http.StatusPreconditionRequired {
+			decode(t, w, &got)
+		}
+		return w.Code, got, w.Body.String()
 	}
-	if _, ok := got.Elicit.Schema.Properties["password"]; ok {
-		t.Fatal("a Google account is never asked for a password")
+
+	// No client configured: an honest sentence, no field, and never a
+	// password for an account that has no app passwords.
+	for _, user := range []string{"me@gmail.com", "me@workspace.example", "me@outlook.com", "me@tenant.example"} {
+		code, got, body := ask(user)
+		if code != http.StatusPreconditionRequired || len(got.Elicit.Schema.Properties) != 0 || !strings.Contains(got.Elicit.Message, "no ") || !strings.Contains(got.Elicit.Message, "sign-in configured") {
+			t.Fatalf("%s with no client: %d %s", user, code, body)
+		}
+	}
+
+	r.s.applyConfig(config.Config{GoogleClientID: "gcid", GoogleClientSecret: "gsecret", MicrosoftClientID: "mcid", MicrosoftClientSecret: "msecret"})
+	for user, want := range map[string]string{
+		"me@gmail.com":         "google",
+		"me@workspace.example": "google",
+		"me@outlook.com":       "microsoft",
+		"me@tenant.example":    "microsoft",
+	} {
+		code, got, body := ask(user)
+		if code != http.StatusPreconditionRequired {
+			t.Fatalf("%s: %d %s", user, code, body)
+		}
+		x, _ := got.Elicit.Schema.Properties["grant"]["x-privasys-oauth"].(map[string]any)
+		if x["provider"] != provider.Provider(want).Name() || x["start_url"] != "https://cal.apps.example/v1/oauth/start?kind=calendar.events&provider="+want {
+			t.Fatalf("%s: the sign-in property: %+v", user, got.Elicit.Schema.Properties)
+		}
+		if _, ok := got.Elicit.Schema.Properties["password"]; ok {
+			t.Fatalf("%s: a sign-in account is never asked for a password", user)
+		}
+		if _, ok := got.Elicit.Schema.Properties["provider"]; ok {
+			t.Fatalf("%s: the holder is never asked to pick a provider the domain names", user)
+		}
+	}
+	// Hosted elsewhere, or nowhere the resolver knows: the app password.
+	for _, user := range []string{"me@self.example", "me@icloud.com", "me@nowhere.example"} {
+		code, got, body := ask(user)
+		if code != http.StatusPreconditionRequired || got.Elicit.Schema.Properties["password"] == nil || got.Elicit.Schema.Properties["grant"] != nil {
+			t.Fatalf("%s: %d %s", user, code, body)
+		}
 	}
 }

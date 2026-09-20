@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Privasys/connectors/calendar/internal/cal"
 	"github.com/Privasys/connectors/calendar/internal/store"
 	"github.com/Privasys/connectors/sdk/oauth"
 )
@@ -76,16 +77,19 @@ func newFakeGoogle(t *testing.T) *fakeGoogle {
 	return g
 }
 
-// googleRig points the connector's provider at the fake.
+// googleRig points the connector's Google provider at the fake, beside a
+// Microsoft flow nobody configured.
 func googleRig(t *testing.T, g *fakeGoogle) *rig {
 	t.Helper()
 	r := newRig(t, true)
 	p := google
 	p.AuthURL, p.TokenURL = g.srv.URL+"/auth", g.srv.URL+"/token"
-	r.s.flow = oauth.New(p, "calendar.events")
-	r.s.flow.Identify = r.s.identify
-	r.s.flow.HTTPClient = g.srv.Client()
-	r.s.flow.SetClient("cid", "csecret")
+	r.s.flows = oauth.NewMulti(cal.Kind)
+	f := r.s.flows.Add(store.ProviderGoogle, p)
+	f.Identify = r.s.identifyGoogle
+	f.HTTPClient = g.srv.Client()
+	f.SetClient("cid", "csecret")
+	r.s.flows.Add(store.ProviderMicrosoft, microsoft)
 	r.s.userinfo = g.srv.URL + "/userinfo"
 	r.s.http = g.srv.Client()
 	return r
@@ -95,7 +99,7 @@ func googleRig(t *testing.T, g *fakeGoogle) *rig {
 // callback, and returns the grant code the wallet was sent back with.
 func signIn(t *testing.T, r *rig, g *fakeGoogle) string {
 	t.Helper()
-	w := r.do(http.MethodGet, "/v1/oauth/start?kind=calendar.events&redirect_uri=privasys-wallet%3A%2F%2Fsetup%2Fcallback&nonce=abcdefgh12345678", nil, "")
+	w := r.do(http.MethodGet, "/v1/oauth/start?kind=calendar.events&provider=google&redirect_uri=privasys-wallet%3A%2F%2Fsetup%2Fcallback&nonce=abcdefgh12345678", nil, "")
 	if w.Code != http.StatusFound {
 		t.Fatalf("start: %d %s", w.Code, w.Body)
 	}
@@ -192,7 +196,8 @@ func TestGoogleSignInMintAndKeptToken(t *testing.T) {
 	}
 }
 
-// The sign-in must be for the address the holder typed.
+// The sign-in must be for the address the holder typed: the address is
+// bound to the account, not decorative.
 func TestGoogleSignInForAnotherAccountIsRefused(t *testing.T) {
 	g := newFakeGoogle(t)
 	g.email = "other@gmail.com"

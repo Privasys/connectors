@@ -3,8 +3,8 @@
 
 // Package config is the shape of this deployment's settings. Storing them,
 // gating on them and attesting them is the sdk's (package configure); what
-// they are is this connector's: the root of holder identity, and the OAuth
-// client this deployment speaks to Google as.
+// they are is this connector's: the root of holder identity, and the two
+// OAuth clients this deployment speaks to Google and to Microsoft as.
 package config
 
 import (
@@ -28,27 +28,45 @@ type Config struct {
 	// IdpAudience is the audience those tokens must carry.
 	IdpAudience string `json:"idp_audience,omitempty"`
 
-	// OAuthClientID and OAuthClientSecret are the Google Cloud OAuth client
-	// the deployer created, with https://<host>/v1/oauth/callback as its
-	// redirect URI. The secret is sealed exactly as any configured value: it
-	// is used at Google's token endpoint and never leaves this process. Both
-	// empty means Google accounts cannot be connected here; app passwords
-	// still can.
-	OAuthClientID     string `json:"oauth_client_id,omitempty"`
-	OAuthClientSecret string `json:"oauth_client_secret,omitempty"`
+	// The Google Cloud OAuth client this deployment signs Google accounts
+	// in with, and the Entra app registration for Microsoft accounts. Each
+	// was created with https://<host>/v1/oauth/callback as its redirect
+	// URI. A secret is sealed exactly as any configured value: it is used
+	// at the provider's token endpoint and never leaves this process. A
+	// provider whose pair is empty cannot be connected here; the other
+	// still can, and app-password accounts always can.
+	GoogleClientID        string `json:"google_client_id,omitempty"`
+	GoogleClientSecret    string `json:"google_client_secret,omitempty"`
+	MicrosoftClientID     string `json:"microsoft_client_id,omitempty"`
+	MicrosoftClientSecret string `json:"microsoft_client_secret,omitempty"`
+
+	// The names the Google pair had before the files connector fixed the
+	// vocabulary. Still accepted for one release: a value here is folded
+	// into the Google pair when it is empty, and never stored under this
+	// name again.
+	LegacyClientID     string `json:"oauth_client_id,omitempty"`
+	LegacyClientSecret string `json:"oauth_client_secret,omitempty"`
 }
 
 func (c Config) Validate() error { return configure.ValidateIssuer(c.IdpIssuer) }
 
 // Normalised returns the config as it should be stored and used, defaults
 // applied here so that what is stored, what is served and what is hashed into
-// the certificate are the same strings.
+// the certificate are the same strings. The old names for the Google pair
+// are folded in here and dropped, so a deployment configured under them
+// keeps working and keeps its digest.
 func (c Config) Normalised() Config {
 	out := Config{
-		IdpIssuer:         strings.TrimRight(strings.TrimSpace(c.IdpIssuer), "/"),
-		IdpAudience:       strings.TrimSpace(c.IdpAudience),
-		OAuthClientID:     strings.TrimSpace(c.OAuthClientID),
-		OAuthClientSecret: strings.TrimSpace(c.OAuthClientSecret),
+		IdpIssuer:             strings.TrimRight(strings.TrimSpace(c.IdpIssuer), "/"),
+		IdpAudience:           strings.TrimSpace(c.IdpAudience),
+		GoogleClientID:        strings.TrimSpace(c.GoogleClientID),
+		GoogleClientSecret:    strings.TrimSpace(c.GoogleClientSecret),
+		MicrosoftClientID:     strings.TrimSpace(c.MicrosoftClientID),
+		MicrosoftClientSecret: strings.TrimSpace(c.MicrosoftClientSecret),
+	}
+	if out.GoogleClientID == "" && out.GoogleClientSecret == "" {
+		out.GoogleClientID = strings.TrimSpace(c.LegacyClientID)
+		out.GoogleClientSecret = strings.TrimSpace(c.LegacyClientSecret)
 	}
 	if out.IdpIssuer == "" {
 		out.IdpIssuer = DefaultIdpIssuer
@@ -62,25 +80,38 @@ func (c Config) Normalised() Config {
 // Identity is the root of holder identity.
 func (c Config) Identity() (issuer, audience string) { return c.IdpIssuer, c.IdpAudience }
 
-// DigestFields is what the certificate digest covers. The client secret
+// DigestFields is what the certificate digest covers. Each client secret
 // takes part as the hex of its sha256 rather than as its value, so the
-// certificate says WHICH Google client this deployment speaks as (a rotated
+// certificate says WHICH clients this deployment speaks as (a rotated
 // secret changes the digest) without the digest being a function anyone
-// could invert from the other, public fields: Google's client secrets are
-// long and random, so hashing them first gives nothing away.
+// could invert from the other, public fields: the providers' client
+// secrets are long and random, so hashing them first gives nothing away.
+// The Google pair comes first, as it did when it was the only one, so a
+// deployment with no Microsoft client keeps the digest it had.
 func (c Config) DigestFields() []string {
-	return []string{c.IdpIssuer, c.IdpAudience, c.OAuthClientID, configure.HashSecret(c.OAuthClientSecret)}
+	out := []string{c.IdpIssuer, c.IdpAudience, c.GoogleClientID, configure.HashSecret(c.GoogleClientSecret)}
+	if c.MicrosoftClientID != "" || c.MicrosoftClientSecret != "" {
+		out = append(out, c.MicrosoftClientID, configure.HashSecret(c.MicrosoftClientSecret))
+	}
+	return out
 }
 
-// Public is what /configure answers with. The secret is shown as set or not.
+// Public is what /configure answers with. A secret is shown as set or not.
 func (c Config) Public() map[string]any {
 	return map[string]any{
-		"idp_issuer":              c.IdpIssuer,
-		"idp_audience":            c.IdpAudience,
-		"oauth_client_id":         c.OAuthClientID,
-		"oauth_client_secret_set": c.OAuthClientSecret != "",
+		"idp_issuer":                  c.IdpIssuer,
+		"idp_audience":                c.IdpAudience,
+		"google_client_id":            c.GoogleClientID,
+		"google_client_secret_set":    c.GoogleClientSecret != "",
+		"microsoft_client_id":         c.MicrosoftClientID,
+		"microsoft_client_secret_set": c.MicrosoftClientSecret != "",
 	}
 }
 
-// GoogleConfigured reports whether Google accounts can be connected here.
-func (c Config) GoogleConfigured() bool { return c.OAuthClientID != "" && c.OAuthClientSecret != "" }
+// GoogleConfigured and MicrosoftConfigured report which providers can be
+// signed in with here.
+func (c Config) GoogleConfigured() bool { return c.GoogleClientID != "" && c.GoogleClientSecret != "" }
+
+func (c Config) MicrosoftConfigured() bool {
+	return c.MicrosoftClientID != "" && c.MicrosoftClientSecret != ""
+}

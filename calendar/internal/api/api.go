@@ -5,11 +5,11 @@
 // calls, over the shell every connector shares (the sdk's package connector).
 //
 // What is the calendar connector's here is the tool list, the account each
-// tool runs against, the mapping of the driver's errors to statuses, and
-// the two ways a credential is connected (setup.go). Who the holder is, who a
-// call acts for, the capability check, the credential refusal, the
-// wallet-facing routes, the catalogue, the configure gate and the OAuth
-// dance are the sdk's.
+// tool runs against, the two drivers and the two sign-ins, the mapping of
+// the drivers' errors to statuses, and the way a credential is connected
+// (setup.go). Who the holder is, who a call acts for, the capability check,
+// the credential refusal, the wallet-facing routes, the catalogue, the
+// configure gate and the OAuth dance are the sdk's.
 //
 // The tool surface is the smallest thing that does the job. There is no
 // invite, no accept, no decline, and no change to an event the assistant did
@@ -22,7 +22,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -33,6 +35,7 @@ import (
 	"github.com/Privasys/connectors/calendar/internal/caldavdrv"
 	"github.com/Privasys/connectors/calendar/internal/config"
 	"github.com/Privasys/connectors/calendar/internal/discover"
+	"github.com/Privasys/connectors/calendar/internal/graphdrv"
 	"github.com/Privasys/connectors/calendar/internal/store"
 	"github.com/Privasys/connectors/sdk/configure"
 	"github.com/Privasys/connectors/sdk/connector"
@@ -40,40 +43,61 @@ import (
 	"github.com/Privasys/connectors/sdk/grant"
 	"github.com/Privasys/connectors/sdk/holder"
 	"github.com/Privasys/connectors/sdk/oauth"
+	"github.com/Privasys/connectors/sdk/provider"
 	"github.com/Privasys/connectors/sdk/web"
 )
 
 // idleTTL is how long an unused account connection is kept.
 const idleTTL = 20 * time.Minute
 
-// google is the one provider this connector signs in with. The sdk knows no
-// provider by name; this value is the whole of what it is told.
-var google = oauth.Provider{
-	Name:     "Google",
-	AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
-	TokenURL: "https://oauth2.googleapis.com/token",
-	// The calendar, and the address of the account that signed in, so the
-	// sign-in can be matched to the address the holder typed.
-	Scopes: []string{discover.GoogleScope, "openid", "email"},
-	// A refresh token is issued only with both. Without one the credential
-	// would not outlive its first access token.
-	AuthParams: map[string]string{"access_type": "offline", "prompt": "consent"},
-}
+// The two providers this connector signs in with. The sdk knows no
+// provider by name; these values are the whole of what it is told.
+var (
+	google = oauth.Provider{
+		Name:     "Google",
+		AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
+		TokenURL: "https://oauth2.googleapis.com/token",
+		// The calendar, and the address of the account that signed in, so
+		// the sign-in can be matched to the address the holder typed.
+		Scopes: []string{discover.GoogleScope, "openid", "email"},
+		// A refresh token is issued only with both. Without one the
+		// credential would not outlive its first access token.
+		AuthParams: map[string]string{"access_type": "offline", "prompt": "consent"},
+	}
+	microsoft = oauth.Provider{
+		Name: "Microsoft",
+		// The common tenant, so a work account and a personal account both
+		// sign in through one registration.
+		AuthURL:  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+		TokenURL: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+		// offline_access is what makes a refresh token come back; the rest
+		// is the holder's address, and their calendars to read and to leave
+		// a proposal on.
+		Scopes: []string{"offline_access", "User.Read", "Calendars.ReadWrite"},
+	}
+)
 
-// userinfoURL is where the signed-in account's address is read from.
+// userinfoURL is where a Google sign-in's address is read from.
 const userinfoURL = "https://openidconnect.googleapis.com/v1/userinfo"
 
 type Server struct {
-	svc  *connector.Service[store.Account]
-	flow *oauth.Flow
+	svc   *connector.Service[store.Account]
+	flows *oauth.Multi
 
-	// The seams a test replaces: the resolver that finds a server from an
-	// address, the function that opens an account, and where the signed-in
-	// address is read from.
-	resolver *discover.Resolver
-	open     func(ctx context.Context, cfg caldavdrv.Config) (cal.Driver, error)
-	userinfo string
-	http     *http.Client
+	// The seams a test replaces: who hosts an address, the resolver that
+	// finds a CalDAV server from one, the functions that open an account
+	// at each driver, where a Google sign-in's address is read from, and
+	// Microsoft's token endpoint.
+	who               *provider.Resolver
+	resolver          *discover.Resolver
+	open              func(ctx context.Context, cfg caldavdrv.Config) (cal.Driver, error)
+	openGraph         func(ctx context.Context, cfg graphdrv.Config) (graphDriver, error)
+	userinfo          string
+	microsoftTokenURL string
+	http              *http.Client
+
+	cfgMu sync.Mutex
+	cfg   config.Config
 
 	mu    sync.Mutex
 	conns map[string]*conn
@@ -84,29 +108,44 @@ type conn struct {
 	used time.Time
 }
 
+// graphDriver is what the Graph seam hands back: the driver, and the
+// address the account signs in as, which is what binds a sign-in to the
+// address the holder typed.
+type graphDriver interface {
+	cal.Driver
+	User() string
+}
+
 // New builds the connector over its stores. requireGrant is taken explicitly
 // rather than defaulted, because the zero value being permissive would be
 // exactly the wrong default.
 func New(s store.Store, g grant.Store, requireGrant bool) *Server {
 	srv := &Server{
-		conns:    map[string]*conn{},
-		resolver: discover.Default,
-		userinfo: userinfoURL,
-		http:     &http.Client{Timeout: 30 * time.Second},
+		conns:             map[string]*conn{},
+		who:               provider.Default(),
+		resolver:          discover.Default,
+		userinfo:          userinfoURL,
+		microsoftTokenURL: microsoft.TokenURL,
+		http:              &http.Client{Timeout: 30 * time.Second},
 	}
 	srv.open = func(ctx context.Context, cfg caldavdrv.Config) (cal.Driver, error) {
 		return caldavdrv.Open(ctx, cfg)
 	}
-	srv.flow = oauth.New(google, cal.Kind)
-	srv.flow.Identify = srv.identify
+	srv.openGraph = func(ctx context.Context, cfg graphdrv.Config) (graphDriver, error) { return graphdrv.Open(ctx, cfg) }
+	srv.flows = oauth.NewMulti(cal.Kind)
+	gg := srv.flows.Add(store.ProviderGoogle, google)
+	gg.Identify = srv.identifyGoogle
+	ms := srv.flows.Add(store.ProviderMicrosoft, microsoft)
+	ms.Identify = srv.identifyMicrosoft
 	srv.svc = connector.New(connector.Options[store.Account]{
 		Kind:     cal.Kind,
 		Resource: "calendar",
 		Name:     "Privasys Calendar Connector",
 		Note: "Reads one calendar account for one attested agent, under a capability the holder approved on their device, " +
 			"and leaves tentative proposals for the holder to confirm. It never sends an invitation. " +
-			"There is no page to connect an account on: the holder's wallet asks on the approval screen, " +
-			"or holds the browser for a Google sign-in, and this service keeps the credential only in memory.",
+			"There is no page to connect an account on: the holder's wallet asks for the address on the approval screen, " +
+			"then holds the browser for a Google or Microsoft sign-in, or asks for an app password where there is no sign-in, " +
+			"and this service keeps the credential only in memory.",
 		Credentials:  s,
 		Grants:       g,
 		RequireGrant: requireGrant,
@@ -123,7 +162,7 @@ func New(s store.Store, g grant.Store, requireGrant bool) *Server {
 // SetVerifier installs the holder-token verifier.
 func (s *Server) SetVerifier(v holder.Verifier) { s.svc.SetVerifier(v) }
 
-// SetConfigurable arms the configure endpoint, and takes the OAuth client
+// SetConfigurable arms the configure endpoint, and takes the OAuth clients
 // from the settings now and after every configure.
 func (s *Server) SetConfigurable(g *configure.Gate[config.Config]) {
 	g.OnApply = s.applyConfig
@@ -134,7 +173,17 @@ func (s *Server) SetConfigurable(g *configure.Gate[config.Config]) {
 }
 
 func (s *Server) applyConfig(c config.Config) {
-	s.flow.SetClient(c.OAuthClientID, c.OAuthClientSecret)
+	s.cfgMu.Lock()
+	s.cfg = c
+	s.cfgMu.Unlock()
+	s.flows.Flow(store.ProviderGoogle).SetClient(c.GoogleClientID, c.GoogleClientSecret)
+	s.flows.Flow(store.ProviderMicrosoft).SetClient(c.MicrosoftClientID, c.MicrosoftClientSecret)
+}
+
+func (s *Server) config() config.Config {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	return s.cfg
 }
 
 func (s *Server) credStore() store.Store  { return s.svc.Credentials() }
@@ -174,8 +223,8 @@ func (s *Server) closeAll() {
 	}
 }
 
-// driverFor opens or reuses the account for one subject. A CalDAV driver is
-// stateless HTTP, so the change feed shares it: a held feed call does not
+// driverFor opens or reuses the account for one subject. Both drivers are
+// stateless HTTP, so the change feed shares them: a held feed call does not
 // delay a run's other calls the way a parked IMAP connection did.
 func (s *Server) driverFor(ctx context.Context, sub string) (cal.Driver, error) {
 	s.mu.Lock()
@@ -190,7 +239,7 @@ func (s *Server) driverFor(ctx context.Context, sub string) (cal.Driver, error) 
 	if err != nil {
 		return nil, err
 	}
-	drv, err := s.open(ctx, s.driverConfig(sub, acct))
+	drv, err := s.openAccount(ctx, sub, acct)
 	if err != nil {
 		return nil, err
 	}
@@ -206,26 +255,29 @@ func (s *Server) driverFor(ctx context.Context, sub string) (cal.Driver, error) 
 	return drv, nil
 }
 
-// driverConfig is how an account is dialled: an app password, or a bearer
-// minted from the refresh token as needed.
-func (s *Server) driverConfig(sub string, acct store.Account) caldavdrv.Config {
+// openAccount is how an account is dialled: Graph with a bearer minted from
+// the refresh token, Google's CalDAV with the same, or any other CalDAV
+// server with the app password.
+func (s *Server) openAccount(ctx context.Context, sub string, acct store.Account) (cal.Driver, error) {
+	if acct.Provider == store.ProviderMicrosoft {
+		return s.openGraph(ctx, graphdrv.Config{HTTP: s.http, Token: s.tokenSource(sub)})
+	}
 	cfg := caldavdrv.Config{Endpoint: acct.Endpoint, Principal: acct.Principal, User: acct.User, HTTPClient: s.http}
 	if acct.Provider == store.ProviderGoogle {
 		cfg.Token = s.tokenSource(sub)
 	} else {
 		cfg.Password = acct.Secret
 	}
-	return cfg
+	return s.open(ctx, cfg)
 }
 
-// errTokenRefused is Google no longer honouring the kept sign-in.
-var errTokenRefused = errors.New("Google no longer accepts the saved sign-in for this calendar; ask the user, then call request_access for their " +
+// errTokenRefused is the provider no longer honouring the kept sign-in.
+var errTokenRefused = errors.New("the provider no longer accepts the saved sign-in for this calendar; ask the user, then call request_access for their " +
 	cal.Kind + " resource with ask_again true so they can sign in again on their device")
 
-// tokenSource returns a bearer for the subject's Google account, refreshing
-// it from the kept refresh token when it is about to expire. The refreshed
-// tokens go back into memory; the refresh token itself stays what the
-// wallet keeps.
+// tokenSource returns a bearer for the subject's account, refreshing it from
+// the kept refresh token when it is about to expire. The refreshed tokens go
+// back into memory; the refresh token itself stays what the wallet keeps.
 func (s *Server) tokenSource(sub string) func(ctx context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
 		acct, err := s.credStore().Get(ctx, sub)
@@ -235,7 +287,7 @@ func (s *Server) tokenSource(sub string) func(ctx context.Context) (string, erro
 		if acct.AccessToken != "" && time.Until(acct.Expiry) > time.Minute {
 			return acct.AccessToken, nil
 		}
-		t, err := s.flow.Refresh(ctx, acct.RefreshToken)
+		t, err := s.refresh(ctx, acct.Provider, acct.RefreshToken)
 		if err != nil {
 			if errors.Is(err, oauth.ErrRefused) {
 				return "", errTokenRefused
@@ -251,11 +303,68 @@ func (s *Server) tokenSource(sub string) func(ctx context.Context) (string, erro
 	}
 }
 
+// refresh mints an access token from a refresh token, at the provider's
+// token endpoint. Google's is the sdk's Refresh. Microsoft's token endpoint
+// wants the scope named again on a refresh, which the sdk does not send,
+// so that one is a plain form post here with the same client the flow
+// holds, as the files connector does it.
+func (s *Server) refresh(ctx context.Context, prov, refreshToken string) (oauth.Tokens, error) {
+	if prov != store.ProviderMicrosoft {
+		return s.flows.Flow(prov).Refresh(ctx, refreshToken)
+	}
+	if strings.TrimSpace(refreshToken) == "" {
+		return oauth.Tokens{}, errors.New("no refresh token")
+	}
+	cfg := s.config()
+	if !cfg.MicrosoftConfigured() {
+		return oauth.Tokens{}, errors.New("this deployment has no OAuth client configured for Microsoft")
+	}
+	form := url.Values{
+		"client_id": {cfg.MicrosoftClientID}, "client_secret": {cfg.MicrosoftClientSecret},
+		"grant_type": {"refresh_token"}, "refresh_token": {refreshToken},
+		"scope": {strings.Join(microsoft.Scopes, " ")},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.microsoftTokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return oauth.Tokens{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res, err := s.http.Do(req)
+	if err != nil {
+		return oauth.Tokens{}, err
+	}
+	defer res.Body.Close()
+	var body struct {
+		AccessToken      string `json:"access_token"`
+		RefreshToken     string `json:"refresh_token"`
+		ExpiresIn        int    `json:"expires_in"`
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&body); err != nil && res.StatusCode == http.StatusOK {
+		return oauth.Tokens{}, fmt.Errorf("microsoft: unreadable token answer: %w", err)
+	}
+	if res.StatusCode != http.StatusOK || body.AccessToken == "" {
+		if body.Error != "" {
+			return oauth.Tokens{}, fmt.Errorf("%w: %s", oauth.ErrRefused, strings.TrimSpace(body.Error+" "+body.ErrorDescription))
+		}
+		return oauth.Tokens{}, fmt.Errorf("microsoft: token endpoint answered %s", res.Status)
+	}
+	out := oauth.Tokens{AccessToken: body.AccessToken, RefreshToken: body.RefreshToken}
+	if body.ExpiresIn > 0 {
+		out.Expiry = time.Now().Add(time.Duration(body.ExpiresIn) * time.Second)
+	}
+	if out.RefreshToken == "" {
+		out.RefreshToken = refreshToken
+	}
+	return out, nil
+}
+
 // Routes returns the mux. Tool endpoints mirror the manifest exactly.
 func (s *Server) Routes() *http.ServeMux {
 	m := http.NewServeMux()
 	s.svc.Mount(m)
-	s.flow.Routes(m)
+	s.flows.Routes(m)
 
 	// The permission each tool needs. Reading and writing are different
 	// sentences on the holder's approval screen, so they are different checks
@@ -310,7 +419,7 @@ func status(err error, prefix string) error {
 		return connector.Errorf(http.StatusBadRequest, "%v", err)
 	case errors.Is(err, errTokenRefused):
 		return connector.Errorf(http.StatusBadGateway, "%v", err)
-	case errors.Is(err, caldavdrv.ErrLogin):
+	case errors.Is(err, caldavdrv.ErrLogin), errors.Is(err, graphdrv.ErrLogin):
 		return connector.Errorf(http.StatusBadGateway, "the calendar server no longer accepts the saved details; ask the user, then call request_access for their "+
 			cal.Kind+" resource with ask_again true so their device sends them afresh (%v)", err)
 	}

@@ -70,31 +70,7 @@ func TestSRVWellKnownAndGuesses(t *testing.T) {
 	}
 }
 
-func TestIsGoogle(t *testing.T) {
-	r := &Resolver{
-		LookupMX: func(_ context.Context, name string) ([]*net.MX, error) {
-			switch name {
-			case "workspace.example":
-				return []*net.MX{{Host: "aspmx.l.google.com."}}, nil
-			case "self.example":
-				return []*net.MX{{Host: "mail.self.example."}}, nil
-			}
-			return nil, errors.New("no mx")
-		},
-	}
-	for addr, want := range map[string]bool{
-		"a@gmail.com":         true,
-		"a@GoogleMail.com":    true,
-		"a@workspace.example": true,
-		"a@self.example":      false,
-		"a@icloud.com":        false, // known elsewhere, never asked
-		"a@nowhere.example":   false,
-		"no-domain":           false,
-	} {
-		if got := r.IsGoogle(context.Background(), addr); got != want {
-			t.Errorf("IsGoogle(%q) = %v, want %v", addr, got, want)
-		}
-	}
+func TestGoogleEndpoint(t *testing.T) {
 	if got := GoogleEndpoint(" Me@Gmail.com "); got != "https://apidata.googleusercontent.com/caldav/v2/me@gmail.com/user" {
 		t.Fatalf("GoogleEndpoint = %q", got)
 	}

@@ -5,10 +5,10 @@
 // in-memory store for as long as this process lives and nowhere else.
 //
 // Two modes. An app password, which the holder typed and their device keeps,
-// so nothing is asked of the wallet beyond sending it again. Or a Google
-// sign-in, where the refresh token is the one thing this service needs the
-// wallet to keep for it: the holder never typed it, and without it the
-// credential would not outlive one access token.
+// so nothing is asked of the wallet beyond sending it again. Or a sign-in,
+// at Google or at Microsoft, where the refresh token is the one thing this
+// service needs the wallet to keep for it: the holder never typed it, and
+// without it the credential would not outlive one access token.
 package store
 
 import (
@@ -22,8 +22,9 @@ var ErrNoAccount = credential.ErrNone
 
 // Provider names the credential mode.
 const (
-	ProviderCalDAV = "caldav" // basic auth with an app password
-	ProviderGoogle = "google" // an OAuth bearer, refreshed from the kept token
+	ProviderCalDAV    = "caldav"    // basic auth with an app password
+	ProviderGoogle    = "google"    // Google's CalDAV with an OAuth bearer, refreshed from the kept token
+	ProviderMicrosoft = "microsoft" // Microsoft Graph with an OAuth bearer, likewise
 )
 
 // Account is one connected calendar account.
@@ -33,8 +34,9 @@ const (
 // else. Everything else exists so a holder can be shown what they connected.
 type Account struct {
 	Provider string `json:"provider"`
-	// Endpoint is the CalDAV context URL the account was proved against.
-	Endpoint string `json:"endpoint"`
+	// Endpoint is the CalDAV context URL the account was proved against;
+	// empty for a Microsoft account, which is reached through Graph.
+	Endpoint string `json:"endpoint,omitempty"`
 	// Principal is the principal path when the provider does not discover
 	// it (Google), empty otherwise.
 	Principal string    `json:"principal,omitempty"`

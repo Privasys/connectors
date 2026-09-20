@@ -5,14 +5,22 @@ package api
 
 // Connecting an account happens in one place: the wallet's approval screen.
 //
-// The wallet asks for the address first, alone (428), because what comes
-// next depends on it. For a Google account (Google's own domains, or a domain
-// whose MX is Google) the second step is one button: the wallet opens this
-// service's /v1/oauth/start in an authentication session, the holder signs
-// in with Google in their browser, and only a one-time grant code comes back
-// to the wallet, which sends it with the mint. For any other account the
-// second step is an app password, proved against the server found from the
-// address, exactly as the mail connector does it.
+// The wallet asks for the address first, alone (428), because everything
+// depends on it: the address says who hosts the account, and so which
+// server, which authorisation, and whether the account can be connected
+// here at all. A Google address (Google's own domains, or a domain whose
+// MX is Google) gets one button, Continue with Google; a Microsoft address
+// gets Continue with Microsoft, because Microsoft serves no CalDAV; any
+// other address gets an app password, proved against the server found from
+// the address. A holder is never asked to pick a provider the domain
+// already names, and a provider whose sign-in client is not configured on
+// this deployment is said plainly, with nothing to fill.
+//
+// For a sign-in, the wallet opens this service's /v1/oauth/start in an
+// authentication session, the holder signs in in their browser, and only a
+// one-time grant code comes back to the wallet, which sends it with the
+// mint. The mint refuses a sign-in for any address but the one typed, so
+// the address is bound to the account, not decorative.
 //
 // A password is what the holder typed, and their device already keeps it.
 // A refresh token is not: it is the one thing this service asks the wallet
@@ -32,9 +40,11 @@ import (
 
 	"github.com/Privasys/connectors/calendar/internal/caldavdrv"
 	"github.com/Privasys/connectors/calendar/internal/discover"
+	"github.com/Privasys/connectors/calendar/internal/graphdrv"
 	"github.com/Privasys/connectors/calendar/internal/store"
 	"github.com/Privasys/connectors/sdk/connector"
 	"github.com/Privasys/connectors/sdk/oauth"
+	"github.com/Privasys/connectors/sdk/provider"
 )
 
 type setup struct{ s *Server }
@@ -43,7 +53,7 @@ type setup struct{ s *Server }
 // can be drawn for it.
 func addressElicit() map[string]any {
 	return connector.Elicit(
-		"Connect your calendar. Enter the email address of the account; what you enter goes to the calendar connector's enclave and is kept by this device, the service stores nothing.",
+		"Connect your calendar. Enter the email address of the account; the connector finds who hosts it and asks you to sign in there, or for an app password where there is no sign-in. What you enter goes to the calendar connector's enclave and is kept by this device, the service stores nothing.",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -82,20 +92,39 @@ func hostElicit(user string, tried []string) map[string]any {
 		})
 }
 
-// googleElicit is the second step for a Google account: one button. The
-// wallet draws it from x-privasys-oauth and fills `grant` with the code the
-// sign-in sent back.
-func (p *setup) googleElicit(r *http.Request, user string) map[string]any {
+// signInElicit is the second step for a Google or a Microsoft address: one
+// button. The wallet draws it from x-privasys-oauth and fills `grant` with
+// the code the sign-in sent back.
+func (p *setup) signInElicit(r *http.Request, who provider.Provider, user string) map[string]any {
 	return connector.Elicit(
-		strings.TrimSpace(user)+" is a Google account. Sign in with Google to connect its calendar; the sign-in happens in your browser and only a one-time code comes back to this device.",
+		strings.TrimSpace(user)+" is a "+who.Name()+" account. Sign in with "+who.Name()+" to connect its calendar; the sign-in happens in your browser and only a one-time code comes back to this device.",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"user":  map[string]any{"type": "string", "title": "Email address", "format": "email", "default": strings.TrimSpace(user)},
-				"grant": p.s.flow.SchemaProperty(r),
+				"grant": p.s.flows.SchemaProperty(r, slugOf(who)),
 			},
 			"required": []string{"user", "grant"},
 		})
+}
+
+// notConfiguredElicit is the honest answer for a provider this deployment
+// has no sign-in client for: a sentence, and nothing to fill.
+func notConfiguredElicit(who provider.Provider, user string) map[string]any {
+	return connector.Elicit(
+		strings.TrimSpace(user)+" is a "+who.Name()+" account, and this deployment of the calendar connector has no "+who.Name()+" sign-in configured, so it cannot connect it. Ask whoever runs it to configure a "+who.Name()+" client.",
+		map[string]any{"type": "object", "properties": map[string]any{}})
+}
+
+// slugOf is the sign-in flow a provider runs under; "" for one without.
+func slugOf(who provider.Provider) string {
+	switch who {
+	case provider.Google:
+		return store.ProviderGoogle
+	case provider.Microsoft:
+		return store.ProviderMicrosoft
+	}
+	return ""
 }
 
 func str(answers map[string]any, k string) string {
@@ -103,15 +132,34 @@ func str(answers map[string]any, k string) string {
 	return strings.TrimSpace(v)
 }
 
+// hostOf says who hosts the typed address. A kept sign-in names its
+// provider too (`kept.provider`), and that word wins: the sign-in already
+// proved it, and a resolver that cannot be reached at that moment must not
+// turn a kept Google token into a password question.
+func (p *setup) hostOf(ctx context.Context, answers map[string]any, user string) provider.Provider {
+	if kept, ok := answers["kept"].(map[string]any); ok {
+		switch str(kept, "provider") {
+		case store.ProviderGoogle:
+			return provider.Google
+		case store.ProviderMicrosoft:
+			return provider.Microsoft
+		}
+	}
+	return p.s.who.Of(ctx, user)
+}
+
 // Question is the step the answers so far call for.
 func (p *setup) Question(r *http.Request, answers map[string]any) map[string]any {
-	ctx := r.Context()
 	user := str(answers, "user")
 	if user == "" || discover.Domain(user) == "" {
 		return addressElicit()
 	}
-	if p.s.resolver.IsGoogle(ctx, user) {
-		return p.googleElicit(r, user)
+	who := p.hostOf(r.Context(), answers, user)
+	if slug := slugOf(who); slug != "" {
+		if !p.s.flows.Flow(slug).Configured() {
+			return notConfiguredElicit(who, user)
+		}
+		return p.signInElicit(r, who, user)
 	}
 	return passwordElicit(user)
 }
@@ -123,15 +171,20 @@ func (p *setup) Connect(r *http.Request, sub string, answers map[string]any) (ma
 	if user == "" || discover.Domain(user) == "" {
 		return nil, &connector.ElicitError{Elicit: addressElicit()}
 	}
+	who := p.hostOf(ctx, answers, user)
+	slug := slugOf(who)
+	if slug == "" {
+		return p.connectPassword(ctx, sub, user, str(answers, "password"), str(answers, "host"))
+	}
+	if !p.s.flows.Flow(slug).Configured() {
+		return nil, &connector.ElicitError{Elicit: notConfiguredElicit(who, user)}
+	}
 	if kept, ok := answers["kept"].(map[string]any); ok {
 		if rt := str(kept, "refresh_token"); rt != "" {
-			return p.connectGoogleKept(ctx, sub, user, rt)
+			return p.connectKept(ctx, sub, who, user, rt)
 		}
 	}
-	if p.s.resolver.IsGoogle(ctx, user) {
-		return p.connectGoogle(r, sub, user, str(answers, "grant"))
-	}
-	return p.connectPassword(ctx, sub, user, str(answers, "password"), str(answers, "host"))
+	return p.connectGrant(r, sub, who, user, str(answers, "grant"))
 }
 
 // ---------------------------------------------------------------- password
@@ -174,78 +227,90 @@ func (p *setup) connectPassword(ctx context.Context, sub, user, password, host s
 	return nil, &connector.ElicitError{Elicit: hostElicit(user, tried)}
 }
 
-// ---------------------------------------------------------------- google
+// ---------------------------------------------------------------- sign-in
 
-// connectGoogle redeems the grant code the wallet was sent back with, proves
-// the tokens against the calendar, keeps them, and hands the wallet the
-// refresh token to keep.
-func (p *setup) connectGoogle(r *http.Request, sub, user, grant string) (map[string]any, error) {
-	ctx := r.Context()
-	if !p.s.flow.Configured() {
-		return nil, connector.Errorf(http.StatusServiceUnavailable,
-			"this deployment has no Google OAuth client configured, so a Google account cannot be connected here")
-	}
+// connectGrant redeems the grant code the wallet was sent back with, checks
+// the sign-in was for the address typed, proves the tokens against the
+// calendar, keeps them, and hands the wallet the refresh token to keep.
+func (p *setup) connectGrant(r *http.Request, sub string, who provider.Provider, user, grant string) (map[string]any, error) {
+	flow := p.s.flows.Flow(slugOf(who))
 	if grant == "" {
-		return nil, &connector.ElicitError{Elicit: p.googleElicit(r, user)}
+		return nil, &connector.ElicitError{Elicit: p.signInElicit(r, who, user)}
 	}
-	issued, ok := p.s.flow.Redeem(grant)
+	issued, ok := flow.Redeem(grant)
 	if !ok {
 		// Unknown, used or expired: one more sign-in, said plainly.
-		q := p.googleElicit(r, user)
-		q["message"] = "The sign-in code is unknown, already used or expired. Sign in with Google again."
+		q := p.signInElicit(r, who, user)
+		q["message"] = "The sign-in code is unknown, already used or expired. Sign in with " + who.Name() + " again."
 		return nil, &connector.ElicitError{Elicit: q}
 	}
 	if issued.Identity != "" && !strings.EqualFold(issued.Identity, user) {
 		return nil, connector.Errorf(http.StatusBadRequest,
-			"the Google sign-in was for %s, not %s; enter the address you sign in with", issued.Identity, user)
+			"the %s sign-in was for %s, not %s; enter the address you sign in with", who.Name(), issued.Identity, user)
 	}
 	if issued.RefreshToken == "" {
 		return nil, connector.Errorf(http.StatusBadGateway,
-			"Google issued no refresh token for this sign-in, so the connection would not outlive an hour; remove this app from the Google account's connected apps and sign in again")
+			"%s issued no refresh token for this sign-in, so the connection would not outlive an hour; remove this app from the account's connected apps and sign in again", who.Name())
 	}
-	return p.keepGoogle(ctx, sub, user, issued.Tokens)
+	return p.keepSignIn(r.Context(), sub, who, user, issued.Tokens)
 }
 
-// connectGoogleKept uses the refresh token the wallet kept instead of a
-// browser: mint an access token, prove it, keep it.
-func (p *setup) connectGoogleKept(ctx context.Context, sub, user, refreshToken string) (map[string]any, error) {
-	if !p.s.flow.Configured() {
-		return nil, connector.Errorf(http.StatusServiceUnavailable,
-			"this deployment has no Google OAuth client configured, so a Google account cannot be connected here")
-	}
-	t, err := p.s.flow.Refresh(ctx, refreshToken)
+// connectKept uses the refresh token the wallet kept instead of a browser:
+// mint an access token, prove it, keep it.
+func (p *setup) connectKept(ctx context.Context, sub string, who provider.Provider, user, refreshToken string) (map[string]any, error) {
+	t, err := p.s.refresh(ctx, slugOf(who), refreshToken)
 	if err != nil {
 		if errors.Is(err, oauth.ErrRefused) {
-			return nil, connector.Errorf(http.StatusBadGateway, "Google no longer accepts the saved sign-in for %s; sign in again", user)
+			return nil, connector.Errorf(http.StatusBadGateway, "%s no longer accepts the saved sign-in for %s; sign in again", who.Name(), user)
 		}
-		return nil, connector.Errorf(http.StatusBadGateway, "Google could not be reached to renew the sign-in: %v", err)
+		return nil, connector.Errorf(http.StatusBadGateway, "%s could not be reached to renew the sign-in: %v", who.Name(), err)
 	}
-	return p.keepGoogle(ctx, sub, user, t)
+	return p.keepSignIn(ctx, sub, who, user, t)
 }
 
-// keepGoogle proves the tokens with one call to the calendar and keeps the
-// credential. What goes back to the wallet is the refresh token, and only
-// that: the access token is minutes from expiring and this service mints
-// the next one itself.
-func (p *setup) keepGoogle(ctx context.Context, sub, user string, t oauth.Tokens) (map[string]any, error) {
-	endpoint := discover.GoogleEndpoint(user)
-	principal, _ := url.Parse(endpoint)
+// keepSignIn proves the tokens with one call to the calendar and keeps the
+// credential. What goes back to the wallet is the refresh token and the
+// provider it is for, and only that: the access token is minutes from
+// expiring and this service mints the next one itself.
+func (p *setup) keepSignIn(ctx context.Context, sub string, who provider.Provider, user string, t oauth.Tokens) (map[string]any, error) {
 	acct := store.Account{
-		Provider: store.ProviderGoogle, Endpoint: endpoint, Principal: principal.Path, User: user, LinkedAt: time.Now(),
+		Provider: slugOf(who), User: user, LinkedAt: time.Now(),
 		RefreshToken: t.RefreshToken, AccessToken: t.AccessToken, Expiry: t.Expiry,
 	}
-	drv, err := p.s.open(ctx, caldavdrv.Config{
-		Endpoint: endpoint, Principal: principal.Path, User: user, HTTPClient: p.s.http,
-		Token: func(context.Context) (string, error) { return t.AccessToken, nil },
-	})
-	if err != nil {
-		return nil, connector.Errorf(http.StatusBadGateway, "signed in, but Google's calendar would not open for %s: %v", user, err)
+	bearer := func(context.Context) (string, error) { return t.AccessToken, nil }
+	var err error
+	switch who {
+	case provider.Google:
+		acct.Endpoint = discover.GoogleEndpoint(user)
+		principal, _ := url.Parse(acct.Endpoint)
+		acct.Principal = principal.Path
+		var drv interface{ Close() error }
+		drv, err = p.s.open(ctx, caldavdrv.Config{
+			Endpoint: acct.Endpoint, Principal: acct.Principal, User: user, HTTPClient: p.s.http, Token: bearer,
+		})
+		if err == nil {
+			_ = drv.Close()
+		}
+	case provider.Microsoft:
+		var drv graphDriver
+		drv, err = p.s.openGraph(ctx, graphdrv.Config{HTTP: p.s.http, Token: bearer})
+		if err == nil {
+			// The kept path has no callback probe, so the address is
+			// checked here, against what Graph says.
+			if live := drv.User(); live != "" && !strings.EqualFold(live, user) {
+				return nil, connector.Errorf(http.StatusBadRequest,
+					"the Microsoft sign-in was for %s, not %s; enter the address you sign in with", live, user)
+			}
+			_ = drv.Close()
+		}
 	}
-	_ = drv.Close()
+	if err != nil {
+		return nil, connector.Errorf(http.StatusBadGateway, "signed in, but %s's calendar would not open for %s: %v", who.Name(), user, err)
+	}
 	if err := p.keep(ctx, sub, acct); err != nil {
 		return nil, err
 	}
-	return map[string]any{"refresh_token": t.RefreshToken}, nil
+	return map[string]any{"refresh_token": t.RefreshToken, "provider": acct.Provider}, nil
 }
 
 // keep holds a proven credential in memory and drops any connection opened
@@ -258,9 +323,10 @@ func (p *setup) keep(ctx context.Context, sub string, acct store.Account) error 
 	return nil
 }
 
-// identify reads the address of the account that just signed in, at the
-// OAuth callback, so the mint can check it is the address the holder typed.
-func (s *Server) identify(ctx context.Context, t oauth.Tokens) (string, error) {
+// identifyGoogle reads the address of the account that just signed in, at
+// the OAuth callback, so the mint can check it is the address the holder
+// typed.
+func (s *Server) identifyGoogle(ctx context.Context, t oauth.Tokens) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.userinfo, nil)
 	if err != nil {
 		return "", err
@@ -284,4 +350,19 @@ func (s *Server) identify(ctx context.Context, t oauth.Tokens) (string, error) {
 		return "", errors.New("userinfo names no email")
 	}
 	return strings.ToLower(info.Email), nil
+}
+
+// identifyMicrosoft does the same through Graph, with the driver's own
+// probe, so a sign-in that cannot open the calendars is refused before the
+// wallet is handed a grant code.
+func (s *Server) identifyMicrosoft(ctx context.Context, t oauth.Tokens) (string, error) {
+	drv, err := s.openGraph(ctx, graphdrv.Config{HTTP: s.http, Token: func(context.Context) (string, error) { return t.AccessToken, nil }})
+	if err != nil {
+		return "", err
+	}
+	defer drv.Close()
+	if drv.User() == "" {
+		return "", errors.New("graph names no address for the account")
+	}
+	return drv.User(), nil
 }

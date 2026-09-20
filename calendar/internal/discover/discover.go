@@ -8,9 +8,9 @@
 // TXT path, then `/.well-known/caldav`), then two plain guesses. Every
 // candidate is an https context URL; the caller proves each in turn.
 //
-// It also tells a Google account from the rest: Google's CalDAV endpoint
-// takes a bearer, not a password, so the wallet must draw a sign-in button
-// rather than a password field, and it has to know which before it draws.
+// Who hosts an account, and so whether it is a sign-in or a password, is
+// the sdk's to say (package provider). What is here is where Google's CalDAV
+// lives once the sign-in is done.
 package discover
 
 import (
@@ -39,10 +39,6 @@ var wellKnown = map[string]string{
 	"yandex.com":  "https://caldav.yandex.ru/", "yandex.ru": "https://caldav.yandex.ru/",
 }
 
-// googleDomains are Google's own; a custom domain whose mail is at Google is
-// found through its MX records.
-var googleDomains = map[string]bool{"gmail.com": true, "googlemail.com": true}
-
 // GoogleEndpoint is the CalDAV principal for a Google account, which takes
 // a bearer with the calendar scope.
 func GoogleEndpoint(address string) string {
@@ -56,7 +52,6 @@ const GoogleScope = "https://www.googleapis.com/auth/calendar"
 type Resolver struct {
 	LookupSRV func(ctx context.Context, service, proto, name string) ([]*net.SRV, error)
 	LookupTXT func(ctx context.Context, name string) ([]string, error)
-	LookupMX  func(ctx context.Context, name string) ([]*net.MX, error)
 	// HTTP is used for the well-known redirect and must not follow it.
 	HTTP *http.Client
 }
@@ -68,7 +63,6 @@ var Default = &Resolver{
 		return addrs, err
 	},
 	LookupTXT: net.DefaultResolver.LookupTXT,
-	LookupMX:  net.DefaultResolver.LookupMX,
 	HTTP: &http.Client{
 		Timeout: 5 * time.Second,
 		// The well-known path answers with a redirect to the real context
@@ -91,34 +85,6 @@ func Domain(address string) string {
 		return ""
 	}
 	return strings.ToLower(s[at+1:])
-}
-
-// IsGoogle reports whether the address's mail is at Google: one of Google's
-// own domains, or a domain whose MX records point there.
-func (r *Resolver) IsGoogle(ctx context.Context, address string) bool {
-	domain := Domain(address)
-	if domain == "" {
-		return false
-	}
-	if googleDomains[domain] {
-		return true
-	}
-	if _, known := wellKnown[domain]; known || r.LookupMX == nil {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	mxs, err := r.LookupMX(ctx, domain)
-	if err != nil {
-		return false
-	}
-	for _, mx := range mxs {
-		host := strings.ToLower(strings.TrimSuffix(mx.Host, "."))
-		if strings.HasSuffix(host, ".google.com") || strings.HasSuffix(host, ".googlemail.com") {
-			return true
-		}
-	}
-	return false
 }
 
 // Candidates returns the CalDAV context URLs to try for an address, best

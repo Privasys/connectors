@@ -4,7 +4,7 @@
       "name": "configure",
       "role": "config",
       "endpoint": "/configure",
-      "description": "Name the identity provider whose word this connector takes on WHICH PERSON is approving a calendar, and the Google Cloud OAuth client this deployment signs Google accounts in with. The client secret is sealed like any configured value and never leaves the enclave; a holder's own credential never travels this path. The identity fields default to the platform's own. The service serves nothing until this succeeds.",
+      "description": "Name the identity provider whose word this connector takes on WHICH PERSON is approving a calendar, and the two OAuth clients this deployment signs accounts in with: a Google Cloud OAuth client for a Google address and an Entra app registration for a Microsoft address. The holder types their address and the connector tells from it who hosts the account; any other address is connected over CalDAV with an app password. A client secret is sealed like any configured value and never leaves the enclave; a holder's own credential never travels this path. The identity fields default to the platform's own. The service serves nothing until this succeeds.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -22,18 +22,33 @@
               "label": "Token audience (optional)"
             }
           },
-          "oauth_client_id": {
+          "google_client_id": {
             "type": "string",
-            "description": "The OAuth client id of a Google Cloud project, created with https://<this host>/v1/oauth/callback as an authorised redirect URI and the Google Calendar API enabled. Without it, Google accounts cannot be connected here; app-password accounts still can.",
+            "description": "The OAuth client id of a Google Cloud project, created with https://<this host>/v1/oauth/callback as an authorised redirect URI and the Google Calendar API enabled. Without it, a Google address cannot be connected here and the holder is told so; app-password accounts still can. Was oauth_client_id, which is still accepted for one release.",
             "x-privasys": {
               "label": "Google OAuth client id (optional)"
             }
           },
-          "oauth_client_secret": {
+          "google_client_secret": {
             "type": "string",
-            "description": "The client secret that goes with the id. Sealed at rest, used only at Google's token endpoint; the certificate carries a hash of it, never the value.",
+            "description": "The client secret that goes with the id. Sealed at rest, used only at Google's token endpoint; the certificate carries a hash of it, never the value. Was oauth_client_secret, which is still accepted for one release.",
             "x-privasys": {
               "label": "Google OAuth client secret (optional)",
+              "secret": true
+            }
+          },
+          "microsoft_client_id": {
+            "type": "string",
+            "description": "The application (client) id of an Entra app registration, for accounts in any organisational directory and personal Microsoft accounts, with https://<this host>/v1/oauth/callback as a web redirect URI and the delegated Graph permissions offline_access, User.Read and Calendars.ReadWrite. Microsoft serves no CalDAV, so without it a Microsoft address cannot be connected here and the holder is told so.",
+            "x-privasys": {
+              "label": "Microsoft client id (optional)"
+            }
+          },
+          "microsoft_client_secret": {
+            "type": "string",
+            "description": "The client secret that goes with the id. Sealed at rest, used only at Microsoft's token endpoint; the certificate carries a hash of it, never the value.",
+            "x-privasys": {
+              "label": "Microsoft client secret (optional)",
               "secret": true
             }
           }
@@ -93,7 +108,7 @@
     {
       "name": "search",
       "role": "inference",
-      "description": "Find events in a window whose title, location, description, attendees or organiser contain the text. Case-insensitive, every word must match. The window is bounded like list_events; CalDAV has no server-side search worth relying on, so this is a filter over the window.",
+      "description": "Find events in a window whose title, location, description, attendees or organiser contain the text. Case-insensitive, every word must match. The window is bounded like list_events; neither CalDAV nor Graph has a server-side search over events worth relying on, so this is a filter over the window.",
       "endpoint": "/tools/search",
       "inputSchema": {
         "type": "object",
@@ -240,7 +255,7 @@
     {
       "name": "changes",
       "role": "inference",
-      "description": "Wait for the user's calendars to change and return what did: changed or removed events by id, or calendar_changed with a calendar id when the provider can only say that something in it changed (list again then). Long-polls for up to 60 seconds, so a quiet calendar costs nothing. Pass back the cursor from the previous call.",
+      "description": "Wait for the user's calendars to change and return what did: changed or removed events by id, or calendar_changed with a calendar id when the provider can only say that something in it changed (list again then). A Microsoft account is followed on its default calendar. Long-polls for up to 60 seconds, so a quiet calendar costs nothing. Pass back the cursor from the previous call.",
       "endpoint": "/tools/changes",
       "inputSchema": {
         "type": "object",
