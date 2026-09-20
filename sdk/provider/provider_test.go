@@ -16,11 +16,11 @@ func TestWellKnownDomainsNeedNoLookup(t *testing.T) {
 		return nil, nil
 	}}
 	for addr, want := range map[string]Provider{
-		"Alice@Gmail.com":  Google,
-		"bob@hotmail.fr":   Microsoft,
+		"Alice@Gmail.com":   Google,
+		"bob@hotmail.fr":    Microsoft,
 		"carol@outlook.com": Microsoft,
-		"no-at-sign":       Other,
-		"dan@":             Other,
+		"no-at-sign":        Other,
+		"dan@":              Other,
 	} {
 		if got := r.Of(context.Background(), addr); got != want {
 			t.Errorf("%s: %s, want %s", addr, got, want)
