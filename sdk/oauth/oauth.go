@@ -66,6 +66,13 @@ type Tokens struct {
 	AccessToken  string
 	RefreshToken string
 	Expiry       time.Time
+	// IDToken is the OpenID Connect ID token the exchange answered with,
+	// when the provider issued one (the connector asked for `openid`), and
+	// empty otherwise. It is for the connector's Identify, which may read
+	// the signed-in address from it when the access token cannot be spent
+	// on a userinfo call: a token for one resource (an IMAP server, say)
+	// buys nothing at the provider's own API.
+	IDToken string
 }
 
 // Issued is what a redeemed grant code carries: the tokens, and the account
@@ -284,6 +291,7 @@ func (f *Flow) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t := Tokens{AccessToken: tok.AccessToken, RefreshToken: tok.RefreshToken, Expiry: tok.Expiry}
+	t.IDToken, _ = tok.Extra("id_token").(string)
 	identity := ""
 	if f.Identify != nil {
 		identity, err = f.Identify(r.Context(), t)
