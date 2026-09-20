@@ -35,6 +35,7 @@ import (
 	"github.com/Privasys/connectors/sdk/feed"
 	"github.com/Privasys/connectors/sdk/grant"
 	"github.com/Privasys/connectors/sdk/holder"
+	"github.com/Privasys/connectors/sdk/provider"
 	"github.com/Privasys/connectors/sdk/web"
 )
 
@@ -55,8 +56,15 @@ type Server struct {
 	// svc is the shell: credentials, capabilities, the holder, the routes.
 	svc *connector.Service[store.Account]
 
-	// prove stands in for the mailbox when a test connects one; nil dials it.
-	prove func(context.Context, mailboxDetails) error
+	// who says from an address alone whether the mailbox is at Google, at
+	// Microsoft or somewhere we reach directly; a test replaces it with a
+	// table that never touches DNS.
+	who *provider.Resolver
+
+	// open opens a mailbox; a test replaces it with a fake so nothing is
+	// dialled. Both the probe at connect time and the pooled connections go
+	// through it.
+	open func(ctx context.Context, cfg imapdrv.Config) (mail.Driver, error)
 
 	mu    sync.Mutex
 	conns map[string]*conn
@@ -79,14 +87,15 @@ type conn struct {
 // rather than defaulted, because the zero value being permissive would be
 // exactly the wrong default.
 func New(s store.Store, g grant.Store, requireGrant bool) *Server {
-	srv := &Server{conns: map[string]*conn{}, feeds: map[string]*conn{}}
+	srv := &Server{conns: map[string]*conn{}, feeds: map[string]*conn{}, who: provider.Default()}
+	srv.open = func(_ context.Context, cfg imapdrv.Config) (mail.Driver, error) { return imapdrv.Open(cfg) }
 	srv.svc = connector.New(connector.Options[store.Account]{
 		Kind:     mail.Kind,
 		Resource: "mailbox",
 		Name:     "Privasys Mail Connector",
 		Note: "Reads one mailbox for one attested agent, under a capability the holder approved on their device. " +
-			"There is no page to connect a mailbox on: the holder's wallet asks for the details on the approval screen, " +
-			"and this service keeps them only in memory.",
+			"There is no page to connect a mailbox on: the holder's wallet asks for the address on the approval screen, " +
+			"then holds the browser for a Google or Microsoft sign-in, and this service keeps the credential only in memory.",
 		Credentials:  s,
 		Grants:       g,
 		RequireGrant: requireGrant,
@@ -190,18 +199,7 @@ func (s *Server) driverIn(ctx context.Context, sub string, pool map[string]*conn
 	if err != nil {
 		return nil, err
 	}
-	var drv mail.Driver
-	switch acct.Provider {
-	case "imap", "":
-		drv, err = imapdrv.Open(imapdrv.Config{
-			Host: acct.Host, User: acct.User, Password: acct.Secret,
-			OwnDomains: acct.OwnDomains,
-		})
-	default:
-		// Graph and the Gmail API come later, in that order, because that is
-		// the order of how much permission each needs from its vendor.
-		return nil, fmt.Errorf("provider %q is not implemented", acct.Provider)
-	}
+	drv, err := s.open(ctx, s.driverConfig(sub, acct))
 	if err != nil {
 		return nil, err
 	}
@@ -215,6 +213,19 @@ func (s *Server) driverIn(ctx context.Context, sub string, pool map[string]*conn
 	}
 	pool[sub] = &conn{drv: drv, used: time.Now()}
 	return drv, nil
+}
+
+// driverConfig is how a mailbox is dialled: an app password with LOGIN, or
+// an access token over XOAUTH2, minted from the kept refresh token as
+// needed.
+func (s *Server) driverConfig(sub string, acct store.Account) imapdrv.Config {
+	cfg := imapdrv.Config{Host: acct.Host, User: acct.User, OwnDomains: acct.OwnDomains}
+	if acct.SignedIn() {
+		cfg.Token = s.tokenSource(sub)
+	} else {
+		cfg.Password = acct.Secret
+	}
+	return cfg
 }
 
 // Routes returns the mux. Tool endpoints mirror the manifest exactly.

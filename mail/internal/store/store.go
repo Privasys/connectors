@@ -19,26 +19,50 @@ import (
 // never connected a mailbox here, or this process has restarted since.
 var ErrNoAccount = credential.ErrNone
 
+// Provider names how the mailbox is entered. The protocol is IMAP in every
+// case; what differs is the credential.
+const (
+	ProviderIMAP      = "imap"      // an app password the holder typed, sent with LOGIN
+	ProviderGoogle    = "google"    // a Google sign-in: an OAuth bearer over XOAUTH2, refreshed from the kept token
+	ProviderMicrosoft = "microsoft" // a Microsoft sign-in, the same way
+)
+
 // Account is one connected mailbox.
 //
-// Secret is the only field that is a credential, and it is never returned by
-// any API surface: the connector reads it to dial and nothing else. Everything
-// else here exists so a user can be shown what they connected.
+// Secret, RefreshToken and AccessToken are the credential and are never
+// returned by any API surface: the connector reads them to dial and nothing
+// else. Everything else here exists so a user can be shown what they
+// connected.
 type Account struct {
-	Provider string    `json:"provider"` // "imap", later "graph", "gmail"
+	Provider string    `json:"provider"`
 	Host     string    `json:"host"`
 	User     string    `json:"user"`
 	Secret   string    `json:"secret"`
 	LinkedAt time.Time `json:"linked_at"`
+
+	// The token set of a sign-in. Never serialised, whatever asks: Redacted
+	// is belt and braces. The refresh token is what the wallet keeps for
+	// this service; the access token is minted from it here and expires
+	// within the hour.
+	RefreshToken string    `json:"-"`
+	AccessToken  string    `json:"-"`
+	Expiry       time.Time `json:"-"`
 
 	// OwnDomains lets the agent tell colleagues from customers. Supplied by
 	// the user at connect time rather than guessed.
 	OwnDomains []string `json:"own_domains,omitempty"`
 }
 
+// SignedIn reports whether the mailbox is entered with a sign-in's token
+// set rather than a password.
+func (a Account) SignedIn() bool {
+	return a.Provider == ProviderGoogle || a.Provider == ProviderMicrosoft
+}
+
 // Redacted is the account as anything outside this package may see it.
 func (a Account) Redacted() Account {
-	a.Secret = ""
+	a.Secret, a.RefreshToken, a.AccessToken = "", "", ""
+	a.Expiry = time.Time{}
 	return a
 }
 

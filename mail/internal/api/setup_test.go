@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,9 +15,11 @@ import (
 	"time"
 
 	"github.com/Privasys/connectors/mail/internal/discover"
+	"github.com/Privasys/connectors/mail/internal/imapdrv"
 	"github.com/Privasys/connectors/mail/internal/mail"
 	"github.com/Privasys/connectors/mail/internal/store"
 	"github.com/Privasys/connectors/sdk/grant"
+	"github.com/Privasys/connectors/sdk/provider"
 )
 
 // A test must never reach the network to find a server.
@@ -25,6 +28,31 @@ func offlineDiscovery(t *testing.T) {
 	prev := discover.Default
 	discover.Default = &discover.Resolver{}
 	t.Cleanup(func() { discover.Default = prev })
+}
+
+// offlineProvider answers who hosts an address from the well-known table
+// alone, never from DNS.
+func offlineProvider(s *Server) { s.who = &provider.Resolver{} }
+
+// acceptingMailbox stands in for every mailbox: it opens for whatever it is
+// offered and records the config it was opened with, so a test can see how
+// a credential was dialled without dialling anything.
+func acceptingMailbox(s *Server) *[]imapdrv.Config {
+	var opened []imapdrv.Config
+	s.open = func(ctx context.Context, cfg imapdrv.Config) (mail.Driver, error) {
+		if cfg.Token != nil {
+			// A sign-in is dialled with the token the source hands over,
+			// which is what a test wants to see.
+			tok, err := cfg.Token(ctx)
+			if err != nil {
+				return nil, err
+			}
+			cfg.Password = "bearer:" + tok
+		}
+		opened = append(opened, cfg)
+		return &fakeDriver{}, nil
+	}
+	return &opened
 }
 
 func mintWith(t *testing.T, s *Server, sub string, setup map[string]any) *httptest.ResponseRecorder {
@@ -53,16 +81,19 @@ func mintWith(t *testing.T, s *Server, sub string, setup map[string]any) *httpte
 func freshServer(t *testing.T) *Server {
 	t.Helper()
 	s := New(store.NewMemory(), grant.NewMemory(), true)
-	s.prove = func(context.Context, mailboxDetails) error { return nil }
+	offlineProvider(s)
+	acceptingMailbox(s)
 	return s
 }
 
 // The wallet reads what this service needs before it draws the approval:
-// nothing for a connected holder, the address and password (secret marked)
-// for one who is not, and never anything for an unauthenticated caller.
+// nothing for a connected holder, the address alone for one who is not
+// (the password or the sign-in button come at the second step, once the
+// address says which), and never anything for an unauthenticated caller.
 // There is nothing to approve first: this service asks for no folder.
 func TestSetupSaysWhatTheHolderMustAnswer(t *testing.T) {
 	s := New(fakeStore{subs: map[string]store.Account{"linked": {Provider: "imap", User: "u@example.com"}}}, grant.NewMemory(), true)
+	offlineProvider(s)
 	get := func(sub string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodGet, "/v1/capabilities/setup?kind=mail.mailbox", nil)
 		if sub != "" {
@@ -81,9 +112,11 @@ func TestSetupSaysWhatTheHolderMustAnswer(t *testing.T) {
 	}
 	w = get("new")
 	out := w.Body.String()
-	if w.Code != http.StatusOK || !strings.Contains(out, `"needed":true`) || !strings.Contains(out, `"secrets":["password"]`) ||
-		!strings.Contains(out, `"Email address"`) {
-		t.Fatalf("an unconnected holder is asked for the address and the password: %d %s", w.Code, out)
+	if w.Code != http.StatusOK || !strings.Contains(out, `"needed":true`) || !strings.Contains(out, `"Email address"`) {
+		t.Fatalf("an unconnected holder is asked for the address: %d %s", w.Code, out)
+	}
+	if strings.Contains(out, `"password"`) || strings.Contains(out, "x-privasys-oauth") {
+		t.Fatalf("the address comes first, alone; the credential step depends on it: %s", out)
 	}
 	var parsed struct {
 		Message       string           `json:"message"`
@@ -108,6 +141,59 @@ func TestSetupSaysWhatTheHolderMustAnswer(t *testing.T) {
 	}
 }
 
+// The second step is decided by the address, and by nothing the holder
+// picks: a provider we reach directly is asked for an app password; an
+// address at Google or Microsoft (their own domains, or a domain whose MX is
+// theirs) is never offered a password, because both are retiring passwords
+// over IMAP. A domain whose MX cannot be read is "somewhere else", which
+// means the password path: the honest answer for a domain we could not read.
+func TestSecondStepIsDecidedByTheAddress(t *testing.T) {
+	s := freshServer(t)
+	s.who = &provider.Resolver{LookupMX: func(_ context.Context, domain string) ([]*net.MX, error) {
+		switch domain {
+		case "workspace.example":
+			return []*net.MX{{Host: "aspmx.l.google.com."}}, nil
+		case "tenant.example":
+			return []*net.MX{{Host: "tenant-example.mail.protection.outlook.com."}}, nil
+		}
+		return nil, errors.New("no such domain")
+	}}
+	second := func(user string) string {
+		t.Helper()
+		w := mintWith(t, s, "holder-1", map[string]any{"user": user})
+		if w.Code != http.StatusPreconditionRequired {
+			t.Fatalf("%s: the address alone is one more question, got %d %s", user, w.Code, w.Body)
+		}
+		return w.Body.String()
+	}
+	for _, user := range []string{"me@example.org", "me@unreadable.example", "me@fastmail.com"} {
+		if out := second(user); !strings.Contains(out, `"App password"`) || !strings.Contains(out, `"secrets":["password"]`) {
+			t.Fatalf("%s is reached directly, so the second step is the password: %s", user, out)
+		}
+	}
+	for _, user := range []string{"me@gmail.com", "me@workspace.example", "me@outlook.com", "me@tenant.example"} {
+		out := second(user)
+		if strings.Contains(out, `"password"`) || strings.Contains(out, "App password") {
+			t.Fatalf("%s is at Google or Microsoft and must never be offered a password: %s", user, out)
+		}
+		if !strings.Contains(out, user) {
+			t.Fatalf("the second step names the address it is for: %s", out)
+		}
+	}
+	// Without a sign-in client configured for the provider, the 428 says so
+	// and offers nothing: no button, no password fallback.
+	if out := second("me@gmail.com"); !strings.Contains(out, "no Google sign-in configured") || strings.Contains(out, "x-privasys-oauth") {
+		t.Fatalf("a Google address with no Google client is the honest 428: %s", out)
+	}
+	if out := second("me@hotmail.fr"); !strings.Contains(out, "no Microsoft sign-in configured") || strings.Contains(out, "x-privasys-oauth") {
+		t.Fatalf("a Microsoft address with no Microsoft client is the honest 428: %s", out)
+	}
+	// An address without a domain is the first question again.
+	if out := second("not-an-address"); !strings.Contains(out, `"Email address"`) || strings.Contains(out, "App password") {
+		t.Fatalf("no domain, no second step: %s", out)
+	}
+}
+
 // A mint that carries the holder's answers connects the mailbox first: the
 // provider's refusal comes back as a 502 the wallet shows beside the fields,
 // a server nobody can find as a 428 with one more question, and a mint with
@@ -116,10 +202,11 @@ func TestMintWithSetupConnectsFirst(t *testing.T) {
 	offlineDiscovery(t)
 	st := store.NewMemory()
 	s := New(st, grant.NewMemory(), true)
+	offlineProvider(s)
 
 	w := mintWith(t, s, "holder-1", nil)
-	if w.Code != http.StatusPreconditionRequired || !strings.Contains(w.Body.String(), `"App password"`) {
-		t.Fatalf("no mailbox and no answers: want the question, got %d %s", w.Code, w.Body)
+	if w.Code != http.StatusPreconditionRequired || !strings.Contains(w.Body.String(), `"Email address"`) || strings.Contains(w.Body.String(), `"App password"`) {
+		t.Fatalf("no mailbox and no answers: want the address question, got %d %s", w.Code, w.Body)
 	}
 
 	w = mintWith(t, s, "holder-1", map[string]any{"user": "me@example.org", "password": "pw", "host": "127.0.0.1:1"})
