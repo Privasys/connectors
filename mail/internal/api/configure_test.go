@@ -61,6 +61,44 @@ func TestConfigureNeedsNothingAndNamesNoPeer(t *testing.T) {
 	}
 }
 
+// The OAuth clients arrive through configure: the answer says a secret is
+// set and never what it is, the sign-in for that provider is armed, and the
+// other provider stays honest about having none.
+func TestConfigureArmsTheSignInClients(t *testing.T) {
+	s := freshServer(t)
+	s.SetConfigurable(configure.NewGate(filepath.Join(t.TempDir(), "config.json"), config.Config{}, false))
+	w := postConfigure(t, s, `{"google_client_id":"g-1","google_client_secret":"very-secret-value"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("configure: %d %s", w.Code, w.Body)
+	}
+	out := w.Body.String()
+	if strings.Contains(out, "very-secret-value") || !strings.Contains(out, `"google_client_secret_set":true`) || !strings.Contains(out, `"microsoft_client_secret_set":false`) {
+		t.Fatalf("a secret is reported as set, never as its value: %s", out)
+	}
+	if !s.flows.Flow("google").Configured() || s.flows.Flow("microsoft").Configured() {
+		t.Fatal("configure must arm exactly the sign-in it was given a client for")
+	}
+	w = mintWith(t, s, "holder-1", map[string]any{"user": "me@gmail.com"})
+	if w.Code != http.StatusPreconditionRequired || !strings.Contains(w.Body.String(), "provider=google") {
+		t.Fatalf("a Google address now gets the button: %d %s", w.Code, w.Body)
+	}
+	w = mintWith(t, s, "holder-1", map[string]any{"user": "me@outlook.com"})
+	if w.Code != http.StatusPreconditionRequired || !strings.Contains(w.Body.String(), "no Microsoft sign-in configured") {
+		t.Fatalf("a Microsoft address still gets the honest 428: %d %s", w.Code, w.Body)
+	}
+	// A restart re-arms from the stored settings before anyone configures.
+	restarted := freshServer(t)
+	cfg, found, err := configure.Load[config.Config](filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil || found {
+		t.Fatalf("load of nothing: %v %v", err, found)
+	}
+	cfg.GoogleClientID, cfg.GoogleClientSecret = "g-1", "very-secret-value"
+	restarted.SetConfigurable(configure.NewGate("/tmp/x", cfg.Normalised(), true))
+	if !restarted.flows.Flow("google").Configured() {
+		t.Fatal("settings in force at boot must arm the sign-in without a configure")
+	}
+}
+
 // The same settings posted again (the runtime re-arms the gate at every
 // boot) change nothing. A DIFFERENT identity root forgets every credential
 // and capability in memory: they were approved by people an issuer this

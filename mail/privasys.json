@@ -4,7 +4,7 @@
       "name": "configure",
       "role": "config",
       "endpoint": "/configure",
-      "description": "Name the identity provider whose word this connector takes on WHICH PERSON is approving a mailbox. No secret is set here, and no storage peer: this connector keeps nothing at rest, so a holder's mailbox password never travels this path and there is nowhere it could be sent to. Both fields default to the platform's own. The service serves nothing until this succeeds.",
+      "description": "Name the identity provider whose word this connector takes on WHICH PERSON is approving a mailbox, and the two OAuth clients this deployment signs mailboxes in with: a Google Cloud OAuth client for Gmail and Google Workspace, and an Entra app registration for Outlook.com and Microsoft 365. A mailbox at either provider connects only by that sign-in; without the client, holders at that provider cannot connect here, and no password is offered instead. A client secret is sealed like any configured value and never leaves the enclave; a holder's own credential never travels this path, and there is no storage peer, because this connector keeps nothing at rest. The identity fields default to the platform's own. The service serves nothing until this succeeds.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -20,6 +20,36 @@
             "description": "The audience those tokens must carry, so a token minted for another service cannot be replayed at this one. Leave empty for the platform default.",
             "x-privasys": {
               "label": "Token audience (optional)"
+            }
+          },
+          "google_client_id": {
+            "type": "string",
+            "description": "The OAuth client id of a Google Cloud project, created with https://<this host>/v1/oauth/callback as an authorised redirect URI and the scope https://mail.google.com/ on its consent screen. Without it, Gmail and Google Workspace mailboxes cannot be connected here.",
+            "x-privasys": {
+              "label": "Google OAuth client id (optional)"
+            }
+          },
+          "google_client_secret": {
+            "type": "string",
+            "description": "The client secret that goes with the id. Sealed at rest, used only at Google's token endpoint; the certificate carries a hash of it, never the value.",
+            "x-privasys": {
+              "label": "Google OAuth client secret (optional)",
+              "secret": true
+            }
+          },
+          "microsoft_client_id": {
+            "type": "string",
+            "description": "The application (client) id of an Entra app registration, for accounts in any organisational directory and personal Microsoft accounts, with https://<this host>/v1/oauth/callback as a web redirect URI and the delegated permission IMAP.AccessAsUser.All (Office 365 Exchange Online) plus offline_access, openid, email and profile. Without it, Outlook.com and Microsoft 365 mailboxes cannot be connected here.",
+            "x-privasys": {
+              "label": "Microsoft client id (optional)"
+            }
+          },
+          "microsoft_client_secret": {
+            "type": "string",
+            "description": "The client secret that goes with the id. Sealed at rest, used only at Microsoft's token endpoint; the certificate carries a hash of it, never the value.",
+            "x-privasys": {
+              "label": "Microsoft client secret (optional)",
+              "secret": true
             }
           }
         }

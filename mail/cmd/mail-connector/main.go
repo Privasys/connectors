@@ -61,6 +61,16 @@ func main() {
 	if found {
 		srv.SetVerifier(holder.NewJWKS(cfg.IdpIssuer, cfg.IdpAudience))
 		log.Printf("holders are whoever %s says they are", cfg.IdpIssuer)
+		// Said at boot because a missing client is the one thing a holder
+		// at that provider cannot get past: there is no password to fall
+		// back on for a Google or Microsoft mailbox.
+		for name, ok := range map[string]bool{"Google": cfg.GoogleConfigured(), "Microsoft": cfg.MicrosoftConfigured()} {
+			if ok {
+				log.Printf("%s mailboxes sign in through this deployment's %s OAuth client", name, name)
+			} else {
+				log.Printf("no %s OAuth client configured: %s mailboxes cannot be connected here", name, name)
+			}
+		}
 	} else {
 		log.Print("not configured yet: serving /configure and nothing else")
 	}

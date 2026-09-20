@@ -5,11 +5,13 @@
 // calls, over the shell every connector shares (the sdk's package connector).
 //
 // What is the mail connector's here is the tool list, the mailbox connection
-// each tool runs against, and the mapping of the driver's errors to statuses.
-// Who the holder is, who a call acts for, the capability check, the credential
-// refusal, the wallet-facing routes, the catalogue and the configure gate are
-// the sdk's, so they are the same code in every connector rather than
-// equivalent code.
+// each tool runs against, the two ways a mailbox is connected (setup.go for
+// an app password, signin.go for a Google or Microsoft sign-in), and the
+// mapping of the driver's errors to statuses. Who the holder is, who a call
+// acts for, the capability check, the credential refusal, the wallet-facing
+// routes, the catalogue, the configure gate and the OAuth dance are the
+// sdk's, so they are the same code in every connector rather than equivalent
+// code.
 //
 // The tool surface is the smallest thing that does the job. There is no send,
 // no folder management and no arbitrary IMAP: every capability omitted is one
@@ -27,14 +29,17 @@ import (
 	"time"
 
 	manifest "github.com/Privasys/connectors/mail"
+	"github.com/Privasys/connectors/mail/internal/config"
 	"github.com/Privasys/connectors/mail/internal/imapdrv"
 	"github.com/Privasys/connectors/mail/internal/mail"
 	"github.com/Privasys/connectors/mail/internal/store"
 	"github.com/Privasys/connectors/sdk/caller"
+	"github.com/Privasys/connectors/sdk/configure"
 	"github.com/Privasys/connectors/sdk/connector"
 	"github.com/Privasys/connectors/sdk/feed"
 	"github.com/Privasys/connectors/sdk/grant"
 	"github.com/Privasys/connectors/sdk/holder"
+	"github.com/Privasys/connectors/sdk/oauth"
 	"github.com/Privasys/connectors/sdk/provider"
 	"github.com/Privasys/connectors/sdk/web"
 )
@@ -66,6 +71,17 @@ type Server struct {
 	// through it.
 	open func(ctx context.Context, cfg imapdrv.Config) (mail.Driver, error)
 
+	// flows runs the Google and Microsoft sign-ins behind the two OAuth
+	// routes; http reaches their token endpoints, and microsoftTokenURL is
+	// the one refresh the sdk does not do (signin.go). A test points them
+	// at fakes.
+	flows             *oauth.Multi
+	http              *http.Client
+	microsoftTokenURL string
+
+	cfgMu sync.Mutex
+	cfg   config.Config
+
 	mu    sync.Mutex
 	conns map[string]*conn
 	// feeds holds a SECOND mailbox connection per subject, for the change
@@ -87,8 +103,18 @@ type conn struct {
 // rather than defaulted, because the zero value being permissive would be
 // exactly the wrong default.
 func New(s store.Store, g grant.Store, requireGrant bool) *Server {
-	srv := &Server{conns: map[string]*conn{}, feeds: map[string]*conn{}, who: provider.Default()}
+	srv := &Server{
+		conns: map[string]*conn{}, feeds: map[string]*conn{},
+		who:               provider.Default(),
+		http:              &http.Client{Timeout: 30 * time.Second},
+		microsoftTokenURL: microsoft.TokenURL,
+	}
 	srv.open = func(_ context.Context, cfg imapdrv.Config) (mail.Driver, error) { return imapdrv.Open(cfg) }
+	srv.flows = oauth.NewMulti(mail.Kind)
+	for slug, p := range map[string]oauth.Provider{string(provider.Google): google, string(provider.Microsoft): microsoft} {
+		f := srv.flows.Add(slug, p)
+		f.Identify = srv.identify
+	}
 	srv.svc = connector.New(connector.Options[store.Account]{
 		Kind:     mail.Kind,
 		Resource: "mailbox",
@@ -115,8 +141,29 @@ func New(s store.Store, g grant.Store, requireGrant bool) *Server {
 // SetVerifier installs the holder-token verifier.
 func (s *Server) SetVerifier(v holder.Verifier) { s.svc.SetVerifier(v) }
 
-// SetConfigurable arms the configure endpoint.
-func (s *Server) SetConfigurable(g connector.Gate) { s.svc.SetConfig(g) }
+// SetConfigurable arms the configure endpoint, and takes the OAuth clients
+// from the settings now and after every configure.
+func (s *Server) SetConfigurable(g *configure.Gate[config.Config]) {
+	g.OnApply = s.applyConfig
+	if cur, set := g.Current(); set {
+		s.applyConfig(cur)
+	}
+	s.svc.SetConfig(g)
+}
+
+func (s *Server) applyConfig(c config.Config) {
+	s.cfgMu.Lock()
+	s.cfg = c
+	s.cfgMu.Unlock()
+	s.flows.Flow(string(provider.Google)).SetClient(c.GoogleClientID, c.GoogleClientSecret)
+	s.flows.Flow(string(provider.Microsoft)).SetClient(c.MicrosoftClientID, c.MicrosoftClientSecret)
+}
+
+func (s *Server) config() config.Config {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	return s.cfg
+}
 
 // credStore and grantStore read the current stores through the shell.
 func (s *Server) credStore() store.Store  { return s.svc.Credentials() }
@@ -232,6 +279,7 @@ func (s *Server) driverConfig(sub string, acct store.Account) imapdrv.Config {
 func (s *Server) Routes() *http.ServeMux {
 	m := http.NewServeMux()
 	s.svc.Mount(m)
+	s.flows.Routes(m)
 
 	// The permission each tool needs. Reading and writing are different
 	// sentences on the holder's approval screen, so they are different checks
@@ -263,8 +311,13 @@ func (s *Server) tool(m *http.ServeMux, path string, need grant.Permission, h ha
 	s.svc.Tool(m, path, need, func(ctx context.Context, sub string, body json.RawMessage) (any, error) {
 		drv, err := s.driverFor(ctx, sub)
 		if err != nil {
-			if errors.Is(err, store.ErrNoAccount) {
+			switch {
+			case errors.Is(err, store.ErrNoAccount):
 				return nil, err // forgotten since the shell looked; the same refusal
+			case errors.Is(err, errTokenRefused):
+				// The sentence sends the agent to the holder's device, where
+				// the sign-in button is drawn again.
+				return nil, connector.Errorf(http.StatusBadGateway, "%v", err)
 			}
 			return nil, connector.Errorf(http.StatusBadGateway, "the mailbox is not reachable: %v", err)
 		}
@@ -273,6 +326,8 @@ func (s *Server) tool(m *http.ServeMux, path string, need grant.Permission, h ha
 			switch {
 			case errors.Is(err, store.ErrNoAccount):
 				return nil, err
+			case errors.Is(err, errTokenRefused):
+				return nil, connector.Errorf(http.StatusBadGateway, "%v", err)
 			case errors.Is(err, mail.ErrNotFound):
 				return nil, connector.Errorf(http.StatusNotFound, "%v", err)
 			case errors.Is(err, mail.ErrUnreadable):

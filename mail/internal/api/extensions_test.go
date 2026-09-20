@@ -116,6 +116,25 @@ func TestConfigDigestChangesWithTheConfiguration(t *testing.T) {
 	if digestFor(base) != digestFor(base) {
 		t.Error("the digest is not stable for the same configuration")
 	}
+
+	// The OAuth clients are part of the formula too: the certificate says
+	// WHICH Google and Microsoft clients this deployment speaks as, and a
+	// rotated secret changes it, because the secret takes part as its hash.
+	withGoogle := config.Config{IdpIssuer: "https://a.example", IdpAudience: "aud", GoogleClientID: "g-1", GoogleClientSecret: "s-1"}
+	rotatedGoogle := config.Config{IdpIssuer: "https://a.example", IdpAudience: "aud", GoogleClientID: "g-1", GoogleClientSecret: "s-2"}
+	withMicrosoft := config.Config{IdpIssuer: "https://a.example", IdpAudience: "aud", MicrosoftClientID: "m-1", MicrosoftClientSecret: "s-1"}
+	if digestFor(base) == digestFor(withGoogle) || digestFor(withGoogle) == digestFor(rotatedGoogle) {
+		t.Error("the Google client, and a rotated secret, must change the digest")
+	}
+	if digestFor(base) == digestFor(withMicrosoft) || digestFor(withGoogle) == digestFor(withMicrosoft) {
+		t.Error("the Microsoft client must change the digest, and not as the Google one does")
+	}
+	// The secret itself is never a field: what is hashed is its sha256.
+	for _, f := range withGoogle.Normalised().DigestFields() {
+		if f == "s-1" {
+			t.Error("a client secret takes part in the digest as its hash, never as its value")
+		}
+	}
 }
 
 // The arc matters: the runtime drops anything a container declares outside
