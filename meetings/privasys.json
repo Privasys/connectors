@@ -4,7 +4,7 @@
       "name": "configure",
       "role": "config",
       "endpoint": "/configure",
-      "description": "Name the identity provider whose word this connector takes on WHICH PERSON is approving their meeting transcripts, the Drive this deployment archives transcripts into and who that Drive must be, and the OAuth clients this deployment signs Zoom and Microsoft accounts in with. Client secrets are sealed like any configured value and never leave the enclave; a holder's own credential never travels this path. The identity fields default to the platform's own. The service serves nothing until this succeeds.",
+      "description": "Name the identity provider whose word this connector takes on WHICH PERSON is approving their meeting transcripts, the Drive this deployment archives transcripts into and who that Drive must be, and the OAuth clients this deployment signs Zoom and Microsoft accounts in with. The holder types their address; a Microsoft address chooses between Teams and Zoom, any other goes to Zoom. Client secrets are sealed like any configured value and never leave the enclave; a holder's own credential never travels this path. The identity fields default to the platform's own. The service serves nothing until this succeeds.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -45,7 +45,7 @@
           },
           "zoom_client_id": {
             "type": "string",
-            "description": "The client id of a Zoom Marketplace user-managed OAuth app, created with https://<this host>/v1/oauth/callback as its redirect URL. Without it, Zoom accounts cannot be connected here.",
+            "description": "The client id of a Zoom Marketplace user-managed OAuth app, created with https://<this host>/v1/oauth/callback as its redirect URL. Without it, nobody can connect Zoom meetings here, and an address that is not Microsoft's cannot connect at all; the holder is told so.",
             "x-privasys": {
               "label": "Zoom OAuth client id (optional)"
             }
@@ -67,7 +67,7 @@
           },
           "microsoft_client_id": {
             "type": "string",
-            "description": "The application (client) id of a Microsoft Entra app registration, with https://<this host>/v1/oauth/callback as a web redirect URI and the delegated permissions User.Read, Calendars.Read, OnlineMeetings.Read and OnlineMeetingTranscript.Read.All. Without it, Microsoft accounts cannot be connected here.",
+            "description": "The application (client) id of a Microsoft Entra app registration, with https://<this host>/v1/oauth/callback as a web redirect URI and the delegated permissions User.Read, Calendars.Read, OnlineMeetings.Read and OnlineMeetingTranscript.Read.All. Without it, Teams is never offered: a Microsoft address goes straight to Zoom, or is told nothing is configured.",
             "x-privasys": {
               "label": "Microsoft client id (optional)"
             }

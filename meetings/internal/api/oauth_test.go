@@ -120,21 +120,23 @@ func signIn(t *testing.T, r *rig, g *fakeAuth, slug string) string {
 	return back.Query().Get("grant")
 }
 
-// The whole path at each provider: sign in, mint with the grant, the
-// credential is proved and kept, the wallet keeps the refresh token; then a
-// restart, the wallet sends the token back, and the account is connected
-// without a browser.
+// The whole path at each provider: the address, sign in, mint with the
+// grant, the credential is proved and kept, the wallet keeps the refresh
+// token and the provider; then a restart, the wallet sends the token back,
+// and the account is connected without a browser and without the
+// resolver.
 func TestSignInMintAndKeptTokenAtBothProviders(t *testing.T) {
 	for _, c := range []struct {
-		slug, choice string
-		basic        bool
+		slug, choice, user string
+		basic              bool
 	}{
-		{meet.ProviderZoom, "Zoom", true},
-		{meet.ProviderTeams, "Microsoft Teams", false},
+		{meet.ProviderZoom, "Zoom", "me@example.org", true},
+		{meet.ProviderTeams, "Microsoft Teams", "me@tenant.example", false},
 	} {
 		t.Run(c.slug, func(t *testing.T) {
 			zoom, ms := newFakeAuth(t, true, true), newFakeAuth(t, false, false)
 			r := oauthRig(t, zoom, ms)
+			r.identity = c.user
 			g := ms
 			if c.slug == meet.ProviderZoom {
 				g = zoom
@@ -147,7 +149,7 @@ func TestSignInMintAndKeptTokenAtBothProviders(t *testing.T) {
 				t.Errorf("microsoft scopes: %q", g.scope)
 			}
 
-			w := r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"provider": c.choice, "grant": code}))
+			w := r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"user": strings.ToUpper(c.user), "provider": c.choice, "grant": code}))
 			if w.Code != http.StatusOK {
 				t.Fatalf("mint: %d %s", w.Code, w.Body)
 			}
@@ -156,7 +158,7 @@ func TestSignInMintAndKeptTokenAtBothProviders(t *testing.T) {
 				ServiceResult map[string]string `json:"service_result"`
 			}
 			decode(t, w, &out)
-			if out.Keep["refresh_token"] != "rt-1" || out.ServiceResult["account"] != "me@example.org" {
+			if out.Keep["refresh_token"] != "rt-1" || out.Keep["provider"] != c.slug || out.ServiceResult["account"] != c.user {
 				t.Fatalf("mint answer: %s", w.Body)
 			}
 			// The credential is in memory and the tools work.
@@ -164,16 +166,18 @@ func TestSignInMintAndKeptTokenAtBothProviders(t *testing.T) {
 				t.Fatalf("list: %d %s", w.Code, w.Body)
 			}
 			// A second redeem of the same code is refused.
-			if w := r.do(http.MethodPost, "/v1/capabilities", asHolder("u2"), mintBody(map[string]any{"provider": c.choice, "grant": code})); w.Code != http.StatusPreconditionRequired {
+			if w := r.do(http.MethodPost, "/v1/capabilities", asHolder("u2"), mintBody(map[string]any{"user": c.user, "provider": c.choice, "grant": code})); w.Code != http.StatusPreconditionRequired {
 				t.Errorf("a used code: %d %s", w.Code, w.Body)
 			}
 
-			// A restart: everything forgotten. The wallet sends the kept token.
+			// A restart: everything forgotten. The wallet sends the kept
+			// token and the provider; the resolver is not asked.
 			r.s.svc.ForgetEveryone()
+			r.s.who = nil
 			if w := r.call(t, "u1", "list_meetings", `{}`); w.Code != http.StatusForbidden {
 				t.Fatalf("after the restart: %d", w.Code)
 			}
-			w = r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"provider": c.choice, "kept": map[string]any{"refresh_token": "rt-1"}}))
+			w = r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"user": c.user, "kept": map[string]any{"refresh_token": "rt-1", "provider": c.slug}}))
 			if w.Code != http.StatusOK {
 				t.Fatalf("mint with the kept token: %d %s", w.Code, w.Body)
 			}
@@ -192,9 +196,41 @@ func TestSignInMintAndKeptTokenAtBothProviders(t *testing.T) {
 
 			// A kept token the provider refuses: sign in again, said plainly.
 			r.s.svc.ForgetEveryone()
-			w = r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"provider": c.choice, "kept": map[string]any{"refresh_token": "revoked"}}))
+			w = r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"user": c.user, "kept": map[string]any{"refresh_token": "revoked", "provider": c.slug}}))
 			if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "sign in again") {
 				t.Errorf("refused kept token: %d %s", w.Code, w.Body)
+			}
+		})
+	}
+}
+
+// The sign-in must be for the address the holder typed, at Zoom (its
+// /users/me email) and at Microsoft (Graph's /me) alike, on the grant path
+// and on the kept path.
+func TestSignInForAnotherAddressIsRefused(t *testing.T) {
+	for _, c := range []struct{ slug, choice, user string }{
+		{meet.ProviderZoom, "Zoom", "me@example.org"},
+		{meet.ProviderTeams, "Microsoft Teams", "me@tenant.example"},
+	} {
+		t.Run(c.slug, func(t *testing.T) {
+			zoom, ms := newFakeAuth(t, true, true), newFakeAuth(t, false, false)
+			r := oauthRig(t, zoom, ms)
+			r.identity = "other@" + strings.SplitN(c.user, "@", 2)[1]
+			g := ms
+			if c.slug == meet.ProviderZoom {
+				g = zoom
+			}
+			code := signIn(t, r, g, c.slug)
+			w := r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"user": c.user, "provider": c.choice, "grant": code}))
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), r.identity) {
+				t.Fatalf("a sign-in for another account: %d %s", w.Code, w.Body)
+			}
+			if _, err := r.s.credStore().Get(t.Context(), "u1"); err == nil {
+				t.Fatal("nothing may be kept for a mismatched sign-in")
+			}
+			w = r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"user": c.user, "kept": map[string]any{"refresh_token": "rt-1", "provider": c.slug}}))
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), r.identity) {
+				t.Fatalf("a kept token for another account: %d %s", w.Code, w.Body)
 			}
 		})
 	}

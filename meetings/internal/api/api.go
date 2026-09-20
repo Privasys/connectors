@@ -41,6 +41,7 @@ import (
 	"github.com/Privasys/connectors/sdk/grant"
 	"github.com/Privasys/connectors/sdk/holder"
 	"github.com/Privasys/connectors/sdk/oauth"
+	"github.com/Privasys/connectors/sdk/provider"
 	"github.com/Privasys/connectors/sdk/redact"
 	"github.com/Privasys/connectors/sdk/vtt"
 	"github.com/Privasys/connectors/sdk/web"
@@ -94,8 +95,10 @@ type Server struct {
 	svc   *connector.Service[store.Account]
 	flows *oauth.Multi
 
-	// The seams a test replaces: the API bases, the functions that open an
-	// account at each provider, the archive, and the clock.
+	// The seams a test replaces: who hosts an address, the API bases, the
+	// functions that open an account at each provider, the archive, and the
+	// clock.
+	who                 *provider.Resolver
 	zoomBase, graphBase string
 	openZoom            func(ctx context.Context, cfg zoomdrv.Config) (meet.Driver, meet.Profile, error)
 	openTeams           func(ctx context.Context, cfg teamsdrv.Config) (meet.Driver, meet.Profile, error)
@@ -118,6 +121,7 @@ type conn struct {
 func New(s store.Store, g grant.Store, requireGrant bool) *Server {
 	srv := &Server{
 		conns:     map[string]*conn{},
+		who:       provider.Default(),
 		zoomBase:  zoomdrv.DefaultAPIBase,
 		graphBase: teamsdrv.DefaultAPIBase,
 		http:      &http.Client{Timeout: 60 * time.Second},
@@ -147,8 +151,8 @@ func New(s store.Store, g grant.Store, requireGrant bool) *Server {
 		Name:     "Privasys Meetings Connector",
 		Note: "Reads the transcripts Zoom or Microsoft Teams produced for meetings the user took part in, from the user's own account, " +
 			"for one attested agent under a capability the user approved on their device; keeps the ones the agent saves in the user's own Drive. " +
-			"It never joins a meeting and never records one. There is no page to connect an account on: the user's wallet holds the browser " +
-			"for the sign-in on the approval screen, and this service keeps the credential only in memory.",
+			"It never joins a meeting and never records one. There is no page to connect an account on: the user's wallet asks for the address " +
+			"on the approval screen, offers Teams only to a Microsoft address, and holds the browser for the sign-in; this service keeps the credential only in memory.",
 		Credentials:   s,
 		Grants:        g,
 		RequireGrant:  requireGrant,

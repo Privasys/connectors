@@ -4,7 +4,9 @@ Reads the transcripts Zoom or Microsoft Teams produced for meetings the
 holder took part in, from the holder's own account, on behalf of one
 attested agent under a capability the holder approved on their own device;
 and keeps the ones the agent saves in the holder's own Drive. **It never
-joins a meeting and never records one.**
+joins a meeting and never records one.** You type your address; the
+connector finds who hosts it and asks you to sign in at Zoom, or at Microsoft
+for a Microsoft address whose meetings are on Teams.
 
 ## What it does, and what it deliberately does not
 
@@ -116,34 +118,51 @@ the holder's own Drive.
 
 There is no page to do it on. The wallet reads what this service needs
 (`GET /v1/capabilities/setup`), draws it on the approval screen, and sends
-the answers with the mint (`POST /v1/capabilities`, `setup`).
+the answers with the mint (`POST /v1/capabilities`, `setup`). **The first
+question is the address alone**, because the address decides what comes
+next: who hosts it (the sdk's `provider`: Microsoft's own domains by name,
+then the domain's MX records for a custom domain at Microsoft 365, then
+"somewhere else"), and so which platforms could hold its meetings.
 
-Two steps. The first is one choice, `provider`: **Zoom** or **Microsoft
-Teams**. The second is one button, **Continue with Zoom** or **Continue with
-Microsoft**. The wallet opens `https://<this host>/v1/oauth/start` in an
-authentication session; this service sends the browser to the provider with
-PKCE and the scopes; the provider sends it back to `https://<this
-host>/v1/oauth/callback`; this service exchanges the code with its sealed
-client secret, proves the tokens by opening the account (`GET /users/me` at
-Zoom, `GET /me` at Graph), keeps them in memory under a one-time grant code,
-and sends the browser back to the wallet's own scheme with that code and
-nothing else. The wallet puts the code in the mint's `setup`; the service
-redeems it once, keeps the credential, and answers the mint with
-`"keep": {"refresh_token": "…"}`.
+**A Microsoft address** may hold its meetings on Teams or on Zoom, so it
+gets one choice, `provider`: **Microsoft Teams** or **Zoom**, drawn only
+among the providers this deployment has a client for; with one client the
+choice is skipped. **Any other address** goes straight to **Continue with
+Zoom**, because a Zoom account sits on any address and Teams needs a
+Microsoft one. A deployment with no client for any provider open to the
+address says so in a 428 with nothing to fill.
+
+Then one button, **Continue with Zoom** or **Continue with Microsoft**. The
+wallet opens `https://<this host>/v1/oauth/start?kind=meeting.transcripts&provider=…`
+in an authentication session; this service sends the browser to the
+provider with PKCE and the scopes; the provider sends it back to
+`https://<this host>/v1/oauth/callback`; this service exchanges the code
+with its sealed client secret, proves the tokens by opening the account and
+reads whose it is (`GET /users/me` at Zoom, `GET /me` at Graph), keeps them
+in memory under a one-time grant code, and sends the browser back to the
+wallet's own scheme with that code and nothing else. The wallet puts the
+code in the mint's `setup`; the service redeems it once, **refuses a
+sign-in for any address but the one typed**, so the address is bound to the
+account rather than decorative, keeps the credential, and answers the mint
+with `"keep": {"refresh_token": "…", "provider": "…"}`.
 
 That refresh token is the one thing this service asks the wallet to keep for
-it. The holder never typed it, and without it the credential would not
-outlive one access token. On a later mint the wallet sends it back as
-`setup.kept.refresh_token`, the service mints an access token from it,
-proves it, and connects with no browser. A kept token the provider no longer
-honours is a 502 with a sentence, and the sign-in button again.
+it, with the word for who issued it. The holder never typed it, and without
+it the credential would not outlive one access token. On a later mint the
+wallet sends it back as `setup.kept.refresh_token` beside the typed address,
+the service mints an access token from it, proves it, checks the address,
+and connects with no browser; `setup.kept.provider` says which sign-in it
+was, so neither the choice nor the resolver is asked again. A kept token the
+provider no longer honours is a 502 with a sentence, and the sign-in button
+again.
 
 Zoom rotates the refresh token at every renewal, so the token the wallet
 keeps is the one from the last mint. Every mint therefore answers with the
-current token, and a mint for an account already in memory (a second app
-approved, a wallet re-sending what it kept) does not touch the provider.
-After a restart of this service a Zoom account whose token rotated since the
-last mint needs one more sign-in; Microsoft's tokens stay valid.
+current token, and a mint for an account already in memory for the same
+address (a second app approved, a wallet re-sending what it kept) does not
+touch the provider. After a restart of this service a Zoom account whose
+token rotated since the last mint needs one more sign-in; Microsoft's tokens
+stay valid.
 
 ### When the credential is not in memory
 
@@ -236,9 +255,9 @@ export PORT=8123
 Off the platform there is no runtime broker and no attested leg, so
 `save_transcript` answers 503 and everything else works. Configure it with
 the OAuth clients, then connect the way the wallet does: the setup route
-says which provider to choose, the start route sends a browser to it, and
-the grant code the callback sends back goes in the mint's `setup` beside
-`provider`.
+asks the address, then where the meetings are for a Microsoft one, the
+start route sends a browser to the provider, and the grant code the callback
+sends back goes in the mint's `setup` beside `user`.
 
 ## What is tested, and what is not
 
@@ -250,7 +269,9 @@ a colliding name, the folder never approved, declined and withdrawn, the
 prerequisite with its retry, Drive's refusal of an app's indexing mark); the
 OAuth path against fake authorisation servers for both providers (the
 sign-in, the mint, the kept token after a restart, Zoom's rotation, a
-refused token); the WebVTT parser on Teams and Zoom fixtures; and the tools
+refused token, a sign-in for another address refused at both); the
+branching by address (a Microsoft address by its own domain and through a
+fake MX, any other address, one client configured, none); the WebVTT parser on Teams and Zoom fixtures; and the tools
 through the shell with fake drivers (windows, redaction, paging, the change
 cursor, the setup steps).
 

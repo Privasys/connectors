@@ -6,6 +6,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"github.com/Privasys/connectors/sdk/caller"
 	"github.com/Privasys/connectors/sdk/grant"
 	"github.com/Privasys/connectors/sdk/holder"
+	"github.com/Privasys/connectors/sdk/provider"
 	"github.com/Privasys/connectors/sdk/vtt"
 )
 
@@ -108,12 +111,24 @@ type rig struct {
 	s       *Server
 	drivers []*fakeDriver
 	archive *fakeArchive
+	// identity is the address the fake providers say signed in.
+	identity string
+}
+
+// fakeMX is the DNS the tests see: tenant.example at Microsoft 365, and
+// every other domain hosted elsewhere or unknown.
+func fakeMX(_ context.Context, domain string) ([]*net.MX, error) {
+	if domain == "tenant.example" {
+		return []*net.MX{{Host: "tenant-example.mail.protection.outlook.com."}}, nil
+	}
+	return nil, errors.New("no such domain")
 }
 
 func newRig(t *testing.T) *rig {
 	t.Helper()
-	r := &rig{s: New(store.NewMemory(), grant.NewMemory(), true), archive: &fakeArchive{}}
+	r := &rig{s: New(store.NewMemory(), grant.NewMemory(), true), archive: &fakeArchive{}, identity: "me@example.org"}
 	r.s.now = func() time.Time { return now }
+	r.s.who = &provider.Resolver{LookupMX: fakeMX}
 	r.s.SetArchive(r.archive)
 	r.s.openZoom = func(_ context.Context, cfg zoomdrv.Config) (meet.Driver, meet.Profile, error) {
 		d, err := newFakeDriver(meet.ProviderZoom, cfg.Token)
@@ -121,7 +136,7 @@ func newRig(t *testing.T) *rig {
 			return nil, meet.Profile{}, err
 		}
 		r.drivers = append(r.drivers, d)
-		return d, meet.Profile{Address: "me@example.org", Name: "Me"}, nil
+		return d, meet.Profile{Address: r.identity, Name: "Me"}, nil
 	}
 	r.s.openTeams = func(_ context.Context, cfg teamsdrv.Config) (meet.Driver, meet.Profile, error) {
 		d, err := newFakeDriver(meet.ProviderTeams, cfg.Token)
@@ -129,7 +144,7 @@ func newRig(t *testing.T) *rig {
 			return nil, meet.Profile{}, err
 		}
 		r.drivers = append(r.drivers, d)
-		return d, meet.Profile{Address: "me@example.org", Name: "Me"}, nil
+		return d, meet.Profile{Address: r.identity, Name: "Me"}, nil
 	}
 	return r
 }
@@ -393,7 +408,11 @@ func TestTokenRefusedIsSaidPlainly(t *testing.T) {
 
 // ---------------------------------------------------------------- setup
 
-func TestSetupAsksTheProviderFirstThenDrawsTheButton(t *testing.T) {
+// The address comes first, and decides the next step: a Microsoft address
+// may hold its meetings on Teams or on Zoom and gets that one choice, among
+// the providers this deployment has a client for; any other address goes
+// straight to Zoom. No client at all is a sentence with nothing to fill.
+func TestSetupAsksTheAddressThenBranchesOnWhoHostsIt(t *testing.T) {
 	r := newRig(t)
 	w := r.do(http.MethodGet, "/v1/capabilities/setup", asHolder("u1"), "")
 	if w.Code != http.StatusOK {
@@ -408,11 +427,8 @@ func TestSetupAsksTheProviderFirstThenDrawsTheButton(t *testing.T) {
 		} `json:"requestedSchema"`
 	}
 	decode(t, w, &out)
-	if !out.Needed || len(out.RequestedSchema.Properties) != 1 || out.RequestedSchema.Properties["provider"] == nil {
-		t.Errorf("first step: %s", w.Body)
-	}
-	if opts, _ := out.RequestedSchema.Properties["provider"]["enum"].([]any); len(opts) != 2 || opts[0] != "Zoom" || opts[1] != "Microsoft Teams" {
-		t.Errorf("choices: %v", out.RequestedSchema.Properties["provider"])
+	if !out.Needed || len(out.RequestedSchema.Properties) != 1 || out.RequestedSchema.Properties["user"] == nil {
+		t.Errorf("first step is the address alone: %s", w.Body)
 	}
 	// The folder is listed for the wallet to complete first.
 	if len(out.Prerequisites) != 1 || out.Prerequisites[0]["nonce"] != "nonce-1" || out.Prerequisites[0]["app_host"] != "meetings.apps.example" {
@@ -425,46 +441,95 @@ func TestSetupAsksTheProviderFirstThenDrawsTheButton(t *testing.T) {
 		t.Errorf("approved: nothing to complete first: %v", out.Prerequisites)
 	}
 
-	// A mint with the provider alone is one more question: the button.
-	w = r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"provider": "Zoom"}))
-	if w.Code != http.StatusServiceUnavailable {
-		// No client configured yet: said plainly.
-		t.Fatalf("unconfigured provider: %d %s", w.Code, w.Body)
-	}
-	r.s.flows.Flow(meet.ProviderZoom).SetClient("cid", "csecret")
-	w = r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"provider": "Zoom"}))
-	if w.Code != http.StatusPreconditionRequired {
-		t.Fatalf("second step: %d %s", w.Code, w.Body)
-	}
-	var elicit struct {
+	type elicit struct {
 		Elicit struct {
+			Message         string `json:"message"`
 			RequestedSchema struct {
 				Properties map[string]map[string]any `json:"properties"`
 			} `json:"requestedSchema"`
 		} `json:"elicit"`
 	}
-	decode(t, w, &elicit)
-	grantProp := elicit.Elicit.RequestedSchema.Properties["grant"]
-	x, _ := grantProp["x-privasys-oauth"].(map[string]any)
-	if x == nil || x["provider"] != "Zoom" || x["start_url"] != "https://meetings.apps.example/v1/oauth/start?kind=meeting.transcripts&provider=zoom" {
-		t.Errorf("button: %v", grantProp)
+	ask := func(setup map[string]any) (int, elicit, string) {
+		w := r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(setup))
+		var got elicit
+		if w.Code == http.StatusPreconditionRequired {
+			decode(t, w, &got)
+		}
+		return w.Code, got, w.Body.String()
 	}
-	if elicit.Elicit.RequestedSchema.Properties["provider"]["default"] != "Zoom" {
-		t.Errorf("the choice is carried forward: %v", elicit.Elicit.RequestedSchema.Properties["provider"])
+	enumOf := func(got elicit, k string) []any {
+		v, _ := got.Elicit.RequestedSchema.Properties[k]["enum"].([]any)
+		return v
 	}
-	w = r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"provider": "Zoom", "grant": "unknown"}))
+
+	// No client configured yet: said plainly, nothing to fill, whoever
+	// hosts the address.
+	for _, user := range []string{"me@example.org", "me@tenant.example", "me@outlook.com"} {
+		code, got, body := ask(map[string]any{"user": user})
+		if code != http.StatusPreconditionRequired || len(got.Elicit.RequestedSchema.Properties) != 0 || !strings.Contains(got.Elicit.Message, "no sign-in configured") {
+			t.Fatalf("%s with no client: %d %s", user, code, body)
+		}
+	}
+
+	// Zoom alone configured: every address goes straight to Zoom's button,
+	// with no choice drawn, because Teams cannot connect anyone here.
+	r.s.flows.Flow(meet.ProviderZoom).SetClient("cid", "csecret")
+	for _, user := range []string{"me@example.org", "me@tenant.example"} {
+		code, got, body := ask(map[string]any{"user": user})
+		if code != http.StatusPreconditionRequired {
+			t.Fatalf("%s: %d %s", user, code, body)
+		}
+		x, _ := got.Elicit.RequestedSchema.Properties["grant"]["x-privasys-oauth"].(map[string]any)
+		if x == nil || x["provider"] != "Zoom" || x["start_url"] != "https://meetings.apps.example/v1/oauth/start?kind=meeting.transcripts&provider=zoom" {
+			t.Errorf("%s: button: %v", user, got.Elicit.RequestedSchema.Properties["grant"])
+		}
+		if opts := enumOf(got, "provider"); len(opts) != 1 || opts[0] != "Zoom" {
+			t.Errorf("%s: no choice to make: %v", user, opts)
+		}
+		if got.Elicit.RequestedSchema.Properties["user"]["default"] != user {
+			t.Errorf("%s: the address is carried forward: %v", user, got.Elicit.RequestedSchema.Properties["user"])
+		}
+	}
+
+	// Both configured: a Microsoft address gets the choice, then the button
+	// for what it chose; any other address still goes straight to Zoom.
+	r.s.flows.Flow(meet.ProviderTeams).SetClient("cid", "csecret")
+	code, got, body := ask(map[string]any{"user": "me@tenant.example"})
+	if code != http.StatusPreconditionRequired || got.Elicit.RequestedSchema.Properties["grant"] != nil {
+		t.Fatalf("a Microsoft address is asked where its meetings are: %d %s", code, body)
+	}
+	if opts := enumOf(got, "provider"); len(opts) != 2 || opts[0] != "Microsoft Teams" || opts[1] != "Zoom" {
+		t.Errorf("choices: %v", opts)
+	}
+	code, got, body = ask(map[string]any{"user": "me@tenant.example", "provider": "Microsoft Teams"})
+	x, _ := got.Elicit.RequestedSchema.Properties["grant"]["x-privasys-oauth"].(map[string]any)
+	if code != http.StatusPreconditionRequired || x == nil || x["provider"] != "Microsoft" || x["start_url"] != "https://meetings.apps.example/v1/oauth/start?kind=meeting.transcripts&provider=teams" {
+		t.Errorf("teams button: %d %s", code, body)
+	}
+	code, got, _ = ask(map[string]any{"user": "me@tenant.example", "provider": "Zoom"})
+	if x, _ := got.Elicit.RequestedSchema.Properties["grant"]["x-privasys-oauth"].(map[string]any); code != http.StatusPreconditionRequired || x == nil || x["provider"] != "Zoom" {
+		t.Errorf("a Microsoft 365 user may hold Zoom meetings: %v", got.Elicit.RequestedSchema.Properties["grant"])
+	}
+	code, got, body = ask(map[string]any{"user": "me@gmail.com", "provider": "Microsoft Teams"})
+	if x, _ := got.Elicit.RequestedSchema.Properties["grant"]["x-privasys-oauth"].(map[string]any); code != http.StatusPreconditionRequired || x == nil || x["provider"] != "Zoom" {
+		t.Errorf("Teams is never offered to an address that is not Microsoft's: %d %s", code, body)
+	}
+	if code, _, body := ask(map[string]any{"user": "not-an-address"}); code != http.StatusPreconditionRequired || !strings.Contains(body, `"user":{`) || strings.Contains(body, "x-privasys-oauth") {
+		t.Errorf("no domain: %d %s", code, body)
+	}
+	w = r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"user": "me@example.org", "grant": "unknown"}))
 	if w.Code != http.StatusPreconditionRequired || !strings.Contains(w.Body.String(), "unknown, already used or expired") {
 		t.Errorf("unknown grant: %d %s", w.Code, w.Body)
 	}
 }
 
-// A mint for an account already in memory does not touch the provider and
-// hands the wallet the current refresh token.
+// A mint for an account already in memory, for the same address, does not
+// touch the provider and hands the wallet the current refresh token.
 func TestMintForAConnectedAccountKeepsTheCurrentToken(t *testing.T) {
 	r := newRig(t)
 	r.s.flows.Flow(meet.ProviderTeams).SetClient("cid", "csecret")
-	_ = r.s.credStore().Put(context.Background(), "u1", store.Account{Provider: meet.ProviderTeams, User: "me@example.org", RefreshToken: "rt-current", AccessToken: "at", Expiry: time.Now().Add(time.Hour)})
-	w := r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"provider": "Microsoft Teams", "kept": map[string]any{"refresh_token": "rt-stale"}}))
+	_ = r.s.credStore().Put(context.Background(), "u1", store.Account{Provider: meet.ProviderTeams, User: "me@tenant.example", RefreshToken: "rt-current", AccessToken: "at", Expiry: time.Now().Add(time.Hour)})
+	w := r.do(http.MethodPost, "/v1/capabilities", asHolder("u1"), mintBody(map[string]any{"user": "me@tenant.example", "provider": "Microsoft Teams", "kept": map[string]any{"refresh_token": "rt-stale", "provider": "teams"}}))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"refresh_token":"rt-current"`) {
 		t.Errorf("mint: %d %s", w.Code, w.Body)
 	}
