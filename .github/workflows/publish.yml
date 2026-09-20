@@ -71,29 +71,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The catalogue reaches the control plane as an image label, and it must
-      # come from the one copy in privasys.json. Compacted here so the label is
-      # a single line, and validated so a broken manifest fails the build
-      # rather than shipping an image whose tools nobody can call.
-      - id: manifest
-        working-directory: mail
-        run: |
-          MANIFEST=$(jq -c . privasys.json)
-          echo "value=$MANIFEST" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4
 
+      # The catalogue reaches the control plane as an image label, and it must
+      # come from the one copy in privasys.json. Compacted and handed to buildx
+      # straight from the shell: passed through a step output and an
+      # expression, one quoted word of the calendar manifest lost its quotes
+      # (2026-09-20) and the control plane learnt no tools at all.
       - id: build
-        uses: docker/build-push-action@v7
-        with:
-          # The repo root, not mail/: the Dockerfile copies mail/ and sdk/ by
-          # their paths in the repository, the same way build.sh and CI do.
-          context: .
-          file: mail/Dockerfile
-          push: true
-          build-args: |
-            MANIFEST=${{ steps.manifest.outputs.value }}
-          tags: |
-            ghcr.io/privasys/mail-connector:latest
-            ghcr.io/privasys/mail-connector:${{ github.sha }}
+        run: |
+          MANIFEST=$(jq -c . mail/privasys.json)
+          docker buildx build --push \
+            --file mail/Dockerfile \
+            --build-arg "MANIFEST=$MANIFEST" \
+            --tag ghcr.io/privasys/mail-connector:latest \
+            --tag ghcr.io/privasys/mail-connector:${{ github.sha }} \
+            --metadata-file /tmp/mail-metadata.json \
+            .
+          echo "digest=$(jq -r '."containerimage.digest"' /tmp/mail-metadata.json)" >> "$GITHUB_OUTPUT"
 
       # The digest is the app's identity on the platform: a version is created
       # against image@digest, never a tag, because a tag can move under a
@@ -117,23 +112,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: manifest
-        working-directory: calendar
-        run: |
-          MANIFEST=$(jq -c . privasys.json)
-          echo "value=$MANIFEST" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4
 
+      # The catalogue reaches the control plane as an image label, and it must
+      # come from the one copy in privasys.json. Compacted and handed to buildx
+      # straight from the shell: passed through a step output and an
+      # expression, one quoted word of the calendar manifest lost its quotes
+      # (2026-09-20) and the control plane learnt no tools at all.
       - id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: calendar/Dockerfile
-          push: true
-          build-args: |
-            MANIFEST=${{ steps.manifest.outputs.value }}
-          tags: |
-            ghcr.io/privasys/calendar-connector:latest
-            ghcr.io/privasys/calendar-connector:${{ github.sha }}
+        run: |
+          MANIFEST=$(jq -c . calendar/privasys.json)
+          docker buildx build --push \
+            --file calendar/Dockerfile \
+            --build-arg "MANIFEST=$MANIFEST" \
+            --tag ghcr.io/privasys/calendar-connector:latest \
+            --tag ghcr.io/privasys/calendar-connector:${{ github.sha }} \
+            --metadata-file /tmp/calendar-metadata.json \
+            .
+          echo "digest=$(jq -r '."containerimage.digest"' /tmp/calendar-metadata.json)" >> "$GITHUB_OUTPUT"
 
       - name: Report the digest
         run: |
