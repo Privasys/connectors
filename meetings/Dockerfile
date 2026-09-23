@@ -70,6 +70,13 @@ EXPOSE 8000
 # image the control plane will not accept, which is the right way to fail.
 ARG MANIFEST
 LABEL org.privasys.manifest=$MANIFEST
+# The two sign-in routes are the only ones a plain browser reaches: the holder's
+# phone opens /v1/oauth/start in a system browser, and the provider redirects
+# back to /v1/oauth/callback. Every other path stays sealed, so the gateway sees
+# no transcript and no credential. Declared here because the label is measured: a
+# verifier reads from the image exactly which paths this connector serves in the
+# clear. Both are GET, which is all the runtime exempts.
+LABEL org.privasys.static-unsealed-prefixes="/v1/oauth/"
 LABEL org.opencontainers.image.source="https://github.com/Privasys/connectors"
 LABEL org.opencontainers.image.title="Privasys Meetings Connector"
 LABEL org.opencontainers.image.description="Reads the transcripts Zoom or Microsoft Teams produced for meetings the holder took part in, from their own account, on behalf of one attested agent under a capability the holder approved, and keeps the saved ones in the holder's own Drive. Never joins a meeting, never records one."
