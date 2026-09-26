@@ -1,7 +1,7 @@
 # Mail Connector
 
 Reads one mailbox on behalf of one attested agent, under a capability the
-holder approved on their own device. **It cannot send.**
+holder approved on their own device. **Today it drafts; it does not send.**
 
 ## What it does, and what it deliberately does not
 
@@ -10,10 +10,17 @@ years of mail through the provider's own index, read the holder's own sent
 text to learn how they write, label what it triaged, and leave a reply in the
 Drafts folder for the holder to read and send themselves.
 
-It cannot send a message, delete mail, move anything between folders, or write
-a label outside the `Privasys/` namespace. Those are not settings. There is no
-send method on the driver interface, so "it cannot send" is a property of the
-shape of the code rather than a promise about its behaviour.
+This release cannot send a message, delete mail, move anything between
+folders, or write a label outside the `Privasys/` namespace. Those are not
+settings. There is no send method on the driver interface, so "it does not
+send" is a property of the shape of the code rather than a promise about its
+behaviour.
+
+Sending is on the way: an agent that has to hand every reply back to a
+person automates half a process. It will arrive the way everything here
+does, as a method on the driver and a permission of its own that the holder
+grants on their device, never as a default switched on, and never implied by
+the permission to read.
 
 ## Where things live
 

@@ -18,8 +18,7 @@ holder's personal drive, under a name that does not exist there yet.
 It cannot delete a file, move one, rename one, share one, or write outside
 its own folder. Those are not settings. There is no method for any of them on
 the driver interface, so "it never deletes" is a property of the shape of the
-code rather than a promise about its behaviour, exactly as the Mail Connector
-cannot send.
+code rather than a promise about its behaviour.
 
 ## The tools
 

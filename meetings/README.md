@@ -23,7 +23,7 @@ It cannot join a meeting, start one, schedule one, invite anyone, or switch
 recording or transcription on. Those are not settings. There is no method for
 any of them on the driver interface, so "we do not join and we do not record"
 is a property of the shape of the code rather than a promise about its
-behaviour, exactly as the Mail Connector cannot send. Whether a meeting is
+behaviour. Whether a meeting is
 recorded and transcribed is decided where it always was: by the people in
 it, on the platform they held it on.
 

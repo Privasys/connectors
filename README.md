@@ -39,11 +39,14 @@ a set of MCP tools.
 5. **Secrets never reach the agent.** One-time codes, password-reset links and
    login magic links are stripped from content before it leaves the connector,
    deterministically, so the filter holds even when the model does not.
-6. **We read, we do not impersonate.** Connectors read what a provider already
-   produced for a user who was there. They do not join meetings, do not record
-   on their own initiative, do not send, and do not invite. What they may
-   leave behind is a draft: a reply in the Drafts folder, a tentative event
-   on the user's own calendar, for the user to send or confirm themselves.
+6. **Acting is something the user grants.** Connectors read what a provider
+   already produced for a user who was there, and what they may do beyond
+   reading is exactly what the user approved on their device, as a
+   permission of its own, never implied by the permission to read. Today that
+   is a draft: a reply in the Drafts folder, a tentative event on the user's
+   own calendar, for the user to send or confirm themselves. Sending mail and
+   sending invitations are on the way, on the same terms. Connectors never
+   join a meeting and never record one on their own initiative.
 7. **The shell is shared, and only the shell.** Everything above is enforced
    by code in `sdk/` that every connector uses as it is: who the holder is,
    who a call acts for, the capability, the credential in memory, the
@@ -71,10 +74,10 @@ image build needs no workspace.
 
 | Path | What |
 |---|---|
-| `sdk/` | The shell. `connector` (the service: routes, the tool wrapper, the refusals), `holder` (who decides), `caller` (who acts, which app), `grant` (the capability), `credential` (the in-memory store, generic over the connector's shape), `configure` (configure-then-freeze, the digest, the extensions route), `mcp` (the catalogue from the embedded manifest), `feed` (the change-feed contract, park and poll), `oauth` (the sign-in with the wallet holding the browser), `redact`, `web`. |
-| `mail/` | **Mail Connector**: reads one mailbox for one attested agent under a capability the holder approved, and cannot send. IMAP everywhere: a sign-in at Google or Microsoft (XOAUTH2), an app password only for a provider reached directly. See `mail/README.md`. |
+| `sdk/` | The shell. `connector` (the service: routes, the tool wrapper, the refusals), `holder` (who decides), `caller` (who acts, which app), `grant` (the capability), `credential` (the in-memory store, generic over the connector's shape), `configure` (configure-then-freeze, the digest, the extensions route), `mcp` (the catalogue from the embedded manifest), `feed` (the change-feed contract, park and poll), `oauth` (the sign-in with the wallet holding the browser), `provider` (who hosts an address: the providers' own domains, then MX), `redact`, `extract` (a document's text: docx, xlsx, pptx, pdf, html), `vtt` (captions to text), `drive` and `broker` (writing into the holder's own Drive, and asking for the folder), `web`. |
+| `mail/` | **Mail Connector**: reads one mailbox for one attested agent under a capability the holder approved, and drafts replies (sending is on the way). IMAP everywhere: a sign-in at Google or Microsoft (XOAUTH2), an app password only for a provider reached directly. See `mail/README.md`. |
 | `mail/cmd/imap-spike/` | The throwaway harness that answered the questions the connector could not be designed without. Kept, because its findings are still the reason the driver looks the way it does. |
-| `calendar/` | **Calendar Connector**: reads one calendar account (a Google sign-in over CalDAV, a Microsoft sign-in over Graph, an app password over CalDAV elsewhere), leaves tentative proposals, and never sends an invitation. See `calendar/README.md`. |
+| `calendar/` | **Calendar Connector**: reads one calendar account (a Google sign-in over CalDAV, a Microsoft sign-in over Graph, an app password over CalDAV elsewhere), and leaves tentative proposals (invitations are on the way). See `calendar/README.md`. |
 | `files/` | **Files Connector**: reads and searches the files in OneDrive, SharePoint or Google Drive, saves into one folder it creates, never deletes, moves or shares. See `files/README.md`. |
 | `meetings/` | **Meetings Connector**: reads the transcripts Zoom or Microsoft Teams produced for meetings the holder was in, and keeps them in the holder's own Drive. Never joins, never records. See `meetings/README.md`. |
 
@@ -93,17 +96,22 @@ It also publishes what it was configured to trust into its own certificate, so
 you can verify by attesting it rather than something you have to take our
 word for.
 
-**The Calendar Connector is built and tested against fakes**, of a CalDAV
-server and of Google's authorisation server, and has not yet been run against
-a real provider or deployed. Its README says exactly what that covers.
+**All four connectors are deployed** on the Privasys test environment,
+with a Google and a Microsoft sign-in configured, and Zoom for meetings. Every
+sign-in leg has been checked from the outside, the way a browser meets it: each
+connector sends the holder to the provider's own sign-in page, with its own
+client and its own callback. The drivers behind those sign-ins (XOAUTH2 at
+Gmail and Exchange Online, CalDAV and Graph calendars, Google Drive and Graph
+files, Zoom and Teams transcripts) are tested against fakes of each provider;
+their first runs against the real ones are next. Each connector's README says
+exactly what its tests cover.
 
 Not built yet:
 
-- **Microsoft Graph and Gmail API drivers** for mail, in that order, because
-  that is the order of how much permission each needs from its vendor.
-  Generic IMAP covers Gmail today through an app password, and every
-  non-Google provider permanently.
-- **Sending, and inviting.** Deliberately, and not as an oversight to be
-  closed quietly: there is no send method on the mail driver interface and no
-  invite method on the calendar driver interface at all, so adding one is a
-  change to the shape of the code rather than a flipped default.
+- **Sending mail, and sending invitations.** Neither the mail nor the calendar
+  driver interface has the method today, so each will arrive as a change to
+  the shape of the code, reviewed as one, and under a permission of its own
+  that the user grants, never as a flipped default.
+- **Gmail API and Graph mail drivers.** IMAP with a Google or Microsoft
+  sign-in covers both providers today, so these wait until something needs
+  what only the native APIs offer.

@@ -2,7 +2,7 @@
 
 Reads one calendar account on behalf of one attested agent, under a capability
 the holder approved on their own device, and leaves tentative proposals for
-the holder to confirm. **It never sends an invitation.** You type your
+the holder to confirm. **Today it proposes; it does not invite.** You type your
 address; the connector finds who hosts it and asks you to sign in there
 (Google, Microsoft), or for an app password where there is no sign-in.
 
@@ -14,11 +14,13 @@ changed, and leave a tentative event on the holder's calendar: the calendar's
 draft, marked as the assistant's, with the people it is for written into the
 text and nobody invited.
 
-It cannot invite anyone, accept or decline anything, or change or delete an
-event it did not create. Those are not settings. There is no method for any
-of them on the driver interface, so "it never sends an invitation" is a
-property of the shape of the code rather than a promise about its behaviour,
-exactly as the Mail Connector cannot send.
+This release cannot invite anyone, accept or decline anything, or change or
+delete an event it did not create. Those are not settings. There is no method
+for any of them on the driver interface, so "it does not invite" is a
+property of the shape of the code rather than a promise about its behaviour.
+Organising a meeting outright is on the way, as it is for sending mail: a
+method of its own on the driver, under a permission the holder grants
+explicitly, never a default.
 
 ## The tools
 
