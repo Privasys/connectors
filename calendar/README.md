@@ -224,7 +224,11 @@ client keeps the digest it had before that pair existed.
 **The Google Cloud OAuth client** is the deployer's to create, in a Google
 Cloud project of their own:
 
-1. Enable the **Google Calendar API** (CalDAV is served under it).
+1. Enable the **CalDAV API** (`caldav.googleapis.com`). It is a separate API
+   from the Calendar API, which this connector does not use: with only the
+   Calendar API enabled, every CalDAV call answers 403 `SERVICE_DISABLED`,
+   which the connector reports as the deployment's setup, not the holder's
+   sign-in.
 2. Configure the OAuth consent screen with the scopes
    `https://www.googleapis.com/auth/calendar`, `openid` and `email`.
 3. Create an OAuth client of type **Web application**, with the authorised

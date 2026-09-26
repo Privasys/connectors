@@ -19,6 +19,7 @@ package caldavdrv
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -36,6 +37,53 @@ import (
 // ErrLogin is the server refusing the credential: the details are wrong,
 // which no other server would fix.
 var ErrLogin = errors.New("the calendar server refused the sign-in")
+
+// ErrProviderSetup is the provider refusing the DEPLOYMENT, not the holder:
+// the sign-in worked, but calendar access is switched off for the project
+// that owns this connector's OAuth client. Google answers every CalDAV call
+// with 403 SERVICE_DISABLED until its CalDAV API is enabled, which is a
+// separate API from the Calendar API. Nothing the holder types can fix it,
+// so it must not read as a refused sign-in.
+var ErrProviderSetup = errors.New("the calendar provider has not switched on calendar access for this deployment")
+
+// refusal reads a 401 or 403 and says which of the two it is. The provider's
+// own explanation travels with a setup refusal, because it names what to
+// switch on and where.
+func refusal(res *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 8<<10))
+	res.Body.Close()
+	if res.StatusCode == http.StatusForbidden && serviceDisabled(body) {
+		return fmt.Errorf("%w: %s", ErrProviderSetup, providerMessage(body))
+	}
+	return fmt.Errorf("%w (%s)", ErrLogin, res.Status)
+}
+
+func serviceDisabled(body []byte) bool {
+	s := string(body)
+	return strings.Contains(s, "SERVICE_DISABLED") || strings.Contains(s, "accessNotConfigured") ||
+		strings.Contains(s, "has not been used in project")
+}
+
+// providerMessage is Google's error message (or the start of the body), cut
+// to its first sentence: enough to name the API and the project.
+func providerMessage(body []byte) string {
+	var g struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	msg := strings.TrimSpace(string(body))
+	if json.Unmarshal(body, &g) == nil && g.Error.Message != "" {
+		msg = g.Error.Message
+	}
+	if i := strings.Index(msg, ". "); i > 0 {
+		msg = msg[:i+1]
+	}
+	if len(msg) > 300 {
+		msg = msg[:300]
+	}
+	return msg
+}
 
 // Config opens one account.
 type Config struct {
@@ -168,8 +216,7 @@ func (t *transport) propfind(ctx context.Context, target string, body string) (*
 			u = loc
 			continue
 		case res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden:
-			res.Body.Close()
-			return nil, nil, fmt.Errorf("%w (%s)", ErrLogin, res.Status)
+			return nil, nil, refusal(res)
 		case res.StatusCode != http.StatusMultiStatus && res.StatusCode != http.StatusOK:
 			res.Body.Close()
 			return nil, nil, fmt.Errorf("%d %s", res.StatusCode, http.StatusText(res.StatusCode))

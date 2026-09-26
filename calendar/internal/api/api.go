@@ -419,6 +419,10 @@ func status(err error, prefix string) error {
 		return connector.Errorf(http.StatusBadRequest, "%v", err)
 	case errors.Is(err, errTokenRefused):
 		return connector.Errorf(http.StatusBadGateway, "%v", err)
+	case errors.Is(err, caldavdrv.ErrProviderSetup):
+		// Not the user's details: asking them again would change nothing.
+		return connector.Errorf(http.StatusBadGateway, "calendar access is switched off for this deployment at the provider; "+
+			"tell the user it is a setup problem on the service's side, not their account (%v)", err)
 	case errors.Is(err, caldavdrv.ErrLogin), errors.Is(err, graphdrv.ErrLogin):
 		return connector.Errorf(http.StatusBadGateway, "the calendar server no longer accepts the saved details; ask the user, then call request_access for their "+
 			cal.Kind+" resource with ask_again true so their device sends them afresh (%v)", err)

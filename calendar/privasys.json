@@ -24,7 +24,7 @@
           },
           "google_client_id": {
             "type": "string",
-            "description": "The OAuth client id of a Google Cloud project, created with https://<this host>/v1/oauth/callback as an authorised redirect URI and the Google Calendar API enabled. Without it, a Google address cannot be connected here and the holder is told so; app-password accounts still can. Was oauth_client_id, which is still accepted for one release.",
+            "description": "The OAuth client id of a Google Cloud project, created with https://<this host>/v1/oauth/callback as an authorised redirect URI and the CalDAV API enabled (caldav.googleapis.com, separate from the Calendar API). Without it, a Google address cannot be connected here and the holder is told so; app-password accounts still can. Was oauth_client_id, which is still accepted for one release.",
             "x-privasys": {
               "label": "Google OAuth client id (optional)"
             }
